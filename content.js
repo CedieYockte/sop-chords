@@ -88,7 +88,7 @@
 
   const LAG = 0.5;        // detection latency compensation (s)
   const FRAME_MS = 100;   // chord frames
-  const FLUX_MS = 10;     // onset frames for tempo (100 Hz)
+  const FLUX_MS = 20;     // onset frames for tempo (50 Hz)
   const ROOT_HUES = [0, 25, 48, 75, 110, 150, 175, 195, 220, 255, 285, 320];
 
   // ---------------- state ----------------
@@ -99,7 +99,8 @@
     started: false, openSeg: null, segFloor: 0, lastT: 0, frames: 0, silent: 0,
     loop: { a: null, b: null, on: false },
   };
-  const tracker = new C.ChordTracker();
+  const tracker = new C.ChordTracker({ hold: 4 });
+  let segVer = 0;
   const flux = [];   // onset envelope at 100 Hz
   let prevSpec = null;
 
@@ -141,7 +142,7 @@
   ts.innerHTML = `
   <style>
     * { box-sizing: border-box; font-family: "Segoe UI", Roboto, system-ui, sans-serif; }
-    .bar { background: rgba(28,29,34,.78); backdrop-filter: blur(14px) saturate(1.2); -webkit-backdrop-filter: blur(14px);
+    .bar { background: rgba(24,25,30,.93); contain: layout paint;
       border: 1px solid rgba(255,255,255,.09); border-radius: 14px; color: #f1f2f5; box-shadow: 0 10px 30px rgba(0,0,0,.35); overflow: hidden; }
     .tb { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,.07); }
     .logo { font-weight: 800; letter-spacing: 1.5px; color: #f2c14e; font-size: 13px; margin-right: 2px; }
@@ -164,7 +165,7 @@
     @keyframes p { 50% { opacity: .3; } }
     .ico { width: 28px; padding: 0; font-size: 14px; }
     .row { display: flex; align-items: stretch; gap: 10px; padding: 10px; }
-    .cards { flex: 1; display: flex; gap: 8px; overflow-x: auto; scroll-behavior: smooth; padding-bottom: 6px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; min-height: 86px; }
+    .cards { flex: 1; display: flex; gap: 8px; overflow-x: auto; contain: content; padding-bottom: 6px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; min-height: 86px; }
     .card { flex: 0 0 auto; width: 122px; height: 80px; border-radius: 12px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; position: relative; overflow: hidden; color: #fff; }
     .card:hover { background: rgba(255,255,255,.12); }
@@ -286,19 +287,30 @@
       list.push({ s: st.openSeg.s, e: Math.max(st.openSeg.s + 0.1, v ? v.currentTime - LAG : st.openSeg.s), c: st.openSeg.c, live: true });
       list.sort((a, b) => a.s - b.s);
     }
+    const minLen = Math.max(0.6, bpm() ? 60 / bpm() * 0.9 : 0.6);   // shorter than ~1 beat = passing note, not a chord change
     const out = [];
     for (const s of list) {
       const c = shapeChord(s.c), last = out[out.length - 1];
-      if (last && C.chordId(last.c) === C.chordId(c) && s.s - last.e < 0.4) { last.e = s.e; last.live = last.live || s.live; }
+      const short = !s.live && s.e - s.s < minLen;
+      if (last && (C.chordId(last.c) === C.chordId(c) || short) && s.s - last.e < 0.6) { last.e = Math.max(last.e, s.e); last.live = last.live || s.live; }
       else out.push({ s: s.s, e: s.e, c, raw: s.c, live: !!s.live });
     }
-    return out;
+    // second pass: merge neighbours that became identical after folding
+    const merged = [];
+    for (const d of out) {
+      const last = merged[merged.length - 1];
+      if (last && C.chordId(last.c) === C.chordId(d.c) && d.s - last.e < 0.6) { last.e = Math.max(last.e, d.e); last.live = last.live || d.live; }
+      else merged.push(d);
+    }
+    return merged;
   }
   let cardSig = '', curCard = -1, cardData = [];
   function renderCards(force) {
     cardData = displaySegs();
     const b = bpm();
-    const sig = cardData.map((d) => `${C.chordId(d.c)}@${d.s.toFixed(1)}-${b ? Math.max(1, Math.round((d.e - d.s) * b / 60)) : (d.e - d.s).toFixed(1)}${d.live ? 'L' : ''}`).join(',') + `|${shift()}|${flats()}|${prefs.simplify}|${st.started}`;
+    const last = cardData[cardData.length - 1];
+    const liveSig = last && last.live ? `${C.chordId(last.c)}@${last.s.toFixed(1)}-${b ? Math.max(1, Math.round((last.e - last.s) * b / 60)) : Math.round(last.e - last.s)}` : '';
+    const sig = `${segVer}|${cardData.length}|${liveSig}|${Math.round(b)}|${shift()}|${flats()}|${prefs.simplify}|${st.started}`;
     if (!force && sig === cardSig) return;
     cardSig = sig;
     if (!cardData.length) {
@@ -552,7 +564,7 @@
     A.wet.connect(A.master); A.master.connect(ctx.destination);
     // mid / side split
     const split = ctx.createChannelSplitter(2), mid = g(), side = g();
-    A.input.connect(split);
+    A.split = split;
     const lm = g(0.5), rm = g(0.5), ls = g(0.5), rs = g(-0.5);
     split.connect(lm, 0); split.connect(rm, 1); split.connect(ls, 0); split.connect(rs, 1);
     lm.connect(mid); rm.connect(mid); ls.connect(side); rs.connect(side);
@@ -560,7 +572,8 @@
     const meter = (id, node) => { const m = an(512); node.connect(m); A.meters[id] = { an: m, buf: new Float32Array(512) }; };
     const voc = chain(mid, [bq('highpass', 220), bq('highpass', 220), bq('lowpass', 4500), bq('lowpass', 4500)]); // centre voice band
     const bas = chain(mid, [bq('lowpass', 200), bq('lowpass', 200)]);                                              // centre lows
-    const drm = chain(A.input, [bq('highpass', 4800), bq('highpass', 4800)]);                                     // cymbals / air
+    const drmIn = bq('highpass', 4800); A.drmIn = drmIn;
+    const drm = chain(drmIn, [bq('highpass', 4800)]);                                                              // cymbals / air
     const ins = chain(side, [bq('highpass', 200), bq('lowpass', 4800)]);                                           // stereo-spread band
     const merge = ctx.createChannelMerger(2), pl = g(1), pr = g(-1), insOut = g();
     ins.connect(pl); ins.connect(pr); pl.connect(merge, 0, 0); pr.connect(merge, 0, 1); merge.connect(insOut);
@@ -583,7 +596,17 @@
     hookedVideo = video;
     if (ctx.state === 'suspended') ctx.resume();
   }
+  let branchOn = false;
+  function setStemBranch() {
+    if (!A) return;
+    const want = mixState.stem || (window.__sopMixVisible ? window.__sopMixVisible() : false);
+    if (want === branchOn) return;
+    branchOn = want;
+    if (want) { A.input.connect(A.split); A.input.connect(A.drmIn); }
+    else { try { A.input.disconnect(A.split); A.input.disconnect(A.drmIn); } catch { /* already off */ } }
+  }
   function applyMix() {
+    setStemBranch();
     if (!A) { mEl.sw.classList.toggle('on', mixState.stem); return; }
     const now = ctx.currentTime, anySolo = CH.some((c) => mixState.solo[c.id]);
     A.dry.gain.setTargetAtTime(mixState.stem ? 0 : 1, now, 0.03);
@@ -616,6 +639,7 @@
       else merged.push({ ...s });
     }
     st.segs = merged;
+    segVer++;
   }
   function closeSeg(end) {
     const o = st.openSeg; if (!o) return;
@@ -643,6 +667,7 @@
       st.key = C.detectKey(st.keyAcc);
       Object.assign(st, { transpose: rec.x || 0, capo: rec.cp || 0, bpmManual: rec.bm || 0, bpmAuto: rec.ba || 0, anchor: rec.an || 0 });
     }
+    segVer++;
     changed();
     renderLoop();
   }
@@ -684,28 +709,28 @@
     const binHz = ctx.sampleRate / A.fluxAn.fftSize, k1 = Math.min(A.fluxBuf.length, Math.ceil(8000 / binHz));
     let s = 0;
     if (prevSpec) for (let k = 2; k < k1; k++) { const d = A.fluxBuf[k] - prevSpec[k]; if (d > 0 && A.fluxBuf[k] > -90 && Number.isFinite(d)) s += d; }
-    prevSpec = Float32Array.from(A.fluxBuf);
+    const tmp = prevSpec || new Float32Array(A.fluxBuf.length); prevSpec = A.fluxBuf; A.fluxBuf = tmp;   // swap, no allocation
     flux.push({ v: s, p: ctx.currentTime * 1000 });   // audio clock = when the analysed samples were rendered
-    if (flux.length > 2000) flux.splice(0, flux.length - 2000);
+    if (flux.length > 1000) flux.splice(0, flux.length - 1000);
   }
   function tempoTick() {
     const v = getVideo();
-    if (flux.length < 700 || !v || v.paused) return;
+    if (flux.length < 350 || !v || v.paused) return;
     // resample the onset envelope onto an exact 100 Hz grid using the real clock (timers jitter)
     const p0 = flux[0].p, p1 = flux[flux.length - 1].p, grid = [];
-    for (let p = p0, j = 0; p <= p1; p += 10) {
+    for (let p = p0, j = 0; p <= p1; p += 20) {
       while (j < flux.length - 2 && flux[j + 1].p <= p) j++;
       const a = flux[j], b = flux[j + 1], f = b.p > a.p ? (p - a.p) / (b.p - a.p) : 0;
       grid.push(a.v + (b.v - a.v) * Math.max(0, Math.min(1, f)));
     }
-    const r = C.estimateTempo(grid, 100);
+    const r = C.estimateTempo(grid, 50);
     if (!r) return;
     const rate = v.playbackRate || 1;
     const songBpm = r.bpm / rate;   // tempo of the recording, independent of playback speed
     if (!st.bpmAuto || Math.abs(st.bpmAuto - songBpm) > 6) st.bpmAuto = songBpm;
     else st.bpmAuto = st.bpmAuto * 0.7 + songBpm * 0.3;
     // beat anchor in video time: the phase frame happened (now - its time) ago
-    const phaseP = p0 + r.phase * 10;
+    const phaseP = p0 + r.phase * 20;
     st.anchor = v.currentTime - ((ctx.currentTime * 1000 - phaseP) / 1000) * rate;
     renderToolbar(); renderCards();
   }
@@ -745,13 +770,13 @@
         const m = A.meters[c.id]; m.an.getFloatTimeDomainData(m.buf);
         let s = 0; for (let i = 0; i < m.buf.length; i++) s += m.buf[i] * m.buf[i];
         arr.push(Math.min(1, Math.sqrt(s / m.buf.length) * (c.id === 'drums' ? 12 : c.id === 'inst' ? 7 : 4.5)));
-        if (arr.length > w / 4) arr.shift();
+        if (arr.length > w / 5) arr.shift();
       }
       const g = cv.getContext('2d'); g.clearRect(0, 0, w, h);
       const on = !mixState.mute[c.id] && (!anySolo || mixState.solo[c.id]);
       g.fillStyle = on ? c.color : c.color + '55';
       if (!arr.length) { g.fillRect(4, h / 2 - 1, w - 8, 2); }
-      arr.forEach((a, i) => { const bh = Math.max(2, a * (h - 8)); g.fillRect(i * 4 + 2, (h - bh) / 2, 2.5, bh); });
+      for (let i = 0; i < arr.length; i++) { const bh = Math.max(2, arr[i] * (h - 8)); g.fillRect(i * 5 + 2, (h - bh) / 2, 3, bh); }
     });
     const cv = mEl.tl, w = cv.clientWidth, h = cv.clientHeight; if (!w || !v) return;
     if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
@@ -800,7 +825,7 @@
     clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);
     tickTimer = setInterval(tick, FRAME_MS);
     fluxTimer = setInterval(() => { fluxTick(); metroTick(); }, FLUX_MS);
-    tempoTimer = setInterval(tempoTick, 2500);
+    tempoTimer = setInterval(tempoTick, 4000);
     topMsg('');
     applyMix();
     if (v.paused) v.play().catch(() => {});
@@ -926,13 +951,16 @@
     window.addEventListener('yt-navigate-finish', onNav);
     window.addEventListener('beforeunload', saveChart);
     const iv1 = setInterval(() => { if (getVid() !== st.vid) onNav(); else if (prefs.enabled) placeHosts(); }, 1000);
-    const iv2 = setInterval(uiTick, 150);
+    const iv2 = setInterval(uiTick, 200);
     let dead = false;
-    const draw = () => { if (dead) return; if (prefs.enabled) drawMixer(getVideo()); requestAnimationFrame(draw); };
-    requestAnimationFrame(draw);
+    let mixOnScreen = false;
+    const io = new IntersectionObserver((es) => { mixOnScreen = es.some((e) => e.isIntersecting); setStemBranch(); }, { threshold: 0 });
+    io.observe(mix);
+    const iv3 = setInterval(() => { if (!dead && prefs.enabled && mixOnScreen && !document.hidden) drawMixer(getVideo()); }, 66);
+    window.__sopMixVisible = () => mixOnScreen;
     window.__sopKill = () => {
       dead = true;
-      clearInterval(iv1); clearInterval(iv2); clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);
+      clearInterval(iv1); clearInterval(iv2); clearInterval(iv3); io.disconnect(); clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);
       window.removeEventListener('yt-navigate-finish', onNav);
       st.started = false;
       top.remove(); mix.remove();
