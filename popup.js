@@ -87,7 +87,7 @@ function loadContext() {
         if (retry) {
           // Tab was open before SOP was installed/updated: load SOP into it now.
           chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['sop-core.js', 'content.js'] }, () => {
-            if (chrome.runtime.lastError) return showReload();
+            if (chrome.runtime.lastError) return showReload(chrome.runtime.lastError.message);
             setTimeout(() => ask(false), 400);
           });
           return;
@@ -107,10 +107,20 @@ function loadContext() {
         chrome.tabs.sendMessage(tab.id, { type: 'sop:show' }, () => window.close());
       };
     });
-    const showReload = () => {
+    const showReload = (injectErr) => {
       // Ask the tab whether SOP crashed, so a failure is visible instead of silent.
       chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => window.__sopError || '' }, (res) => {
-        const err = (!chrome.runtime.lastError && res && res[0] && res[0].result) || '';
+        const readErr = chrome.runtime.lastError && chrome.runtime.lastError.message;
+        const blocked = injectErr || readErr || '';
+        if (blocked && /access|permission|host/i.test(blocked)) {
+          $('ctx').innerHTML = `<p><b style="color:#ffb4b4">Your browser isn't letting SOP run on YouTube.</b></p>
+            <p style="text-align:left;margin:0 0 10px">Fix: open <b>${navigator.userAgent.includes('Edg/') ? 'edge' : 'chrome'}://extensions</b> → SOP → <b>Details</b> → <b>Site access</b> → choose <b>On all sites</b> (or add youtube.com). Then reload YouTube.</p>
+            <pre style="text-align:left;white-space:pre-wrap;word-break:break-word;background:#0e1014;border:1px solid #2c313d;border-radius:8px;padding:8px;font-size:11px;color:#9aa0ad;margin:0 0 10px">${esc(blocked)}</pre>
+            <button class="btn" id="reload">Reload tab</button>`;
+          $('reload').onclick = () => { chrome.tabs.reload(tab.id); window.close(); };
+          return;
+        }
+        const err = ((res && res[0] && res[0].result) || '') || blocked;
         $('ctx').innerHTML = err
           ? `<p><b style="color:#ffb4b4">SOP hit an error on this page.</b> Please send this to the developer:</p>
              <pre id="err" style="text-align:left;white-space:pre-wrap;word-break:break-word;max-height:110px;overflow:auto;background:#0e1014;border:1px solid #2c313d;border-radius:8px;padding:8px;font-size:11px;color:#ffb4b4;margin:0 0 10px">${esc(err.slice(0, 900))}</pre>
