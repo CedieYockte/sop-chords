@@ -7,6 +7,26 @@
   window.__sopAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
 
   const C = window.SOPCore;
+  // YouTube enforces Trusted Types: plain innerHTML assignments throw ("requires 'TrustedHTML'"),
+  // which silently killed SOP before it could draw anything. Route SOP's own HTML through a policy.
+  // (Content scripts run in an isolated world, so this shim only affects SOP, never YouTube's code.)
+  const ttPolicy = (() => {
+    const tt = window.trustedTypes;
+    if (!tt || !tt.createPolicy) return null;
+    for (const name of ['sop-html', 'sop-html-' + Math.random().toString(36).slice(2)]) {
+      try { return tt.createPolicy(name, { createHTML: (x) => x }); } catch { /* name taken or not allowed */ }
+    }
+    return tt.defaultPolicy || null;
+  })();
+  const trusted = (html) => (ttPolicy && typeof html === 'string' ? ttPolicy.createHTML(html) : html);
+  if (ttPolicy && !window.__sopTTShim) {
+    window.__sopTTShim = true;
+    for (const proto of [Element.prototype, ShadowRoot.prototype]) {
+      const d = Object.getOwnPropertyDescriptor(proto, 'innerHTML');
+      if (d && d.set) Object.defineProperty(proto, 'innerHTML', { ...d, set(v) { d.set.call(this, trusted(v)); } });
+    }
+  }
+
   const LAG = 0.5;        // detection latency compensation (s)
   const FRAME_MS = 100;   // chord frames
   const FLUX_MS = 10;     // onset frames for tempo (100 Hz)
@@ -780,7 +800,7 @@
         const w = window.open('', '_blank', 'width=820,height=900');
         if (w) {
           const page = sh.querySelector('.pg').cloneNode(true); page.querySelector('.act').remove();
-          w.document.write(`<html><head><meta charset="utf-8"><title>${esc(st.title)}</title><style>${sh.querySelector('style').textContent} .pg{max-height:none;width:auto}</style></head><body>${page.outerHTML}</body></html>`);
+          w.document.write(trusted(`<html><head><meta charset="utf-8"><title>${esc(st.title)}</title><style>${sh.querySelector('style').textContent} .pg{max-height:none;width:auto}</style></head><body>${page.outerHTML}</body></html>`));
           w.document.close(); w.focus(); w.print();
         }
       }
