@@ -108,9 +108,17 @@ function loadContext() {
       };
     });
     const showReload = () => {
-      $('ctx').innerHTML = `<p>Reload this YouTube tab once so SOP can start working on it.</p>
-        <button class="btn" id="reload">Reload tab</button>`;
-      $('reload').onclick = () => { chrome.tabs.reload(tab.id); window.close(); };
+      // Ask the tab whether SOP crashed, so a failure is visible instead of silent.
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => window.__sopError || '' }, (res) => {
+        const err = (!chrome.runtime.lastError && res && res[0] && res[0].result) || '';
+        $('ctx').innerHTML = err
+          ? `<p><b style="color:#ffb4b4">SOP hit an error on this page.</b> Please send this to the developer:</p>
+             <pre id="err" style="text-align:left;white-space:pre-wrap;word-break:break-word;max-height:110px;overflow:auto;background:#0e1014;border:1px solid #2c313d;border-radius:8px;padding:8px;font-size:11px;color:#ffb4b4;margin:0 0 10px">${esc(err.slice(0, 900))}</pre>
+             <button class="btn" id="copyErr">Copy error</button> <button class="btn" id="reload">Reload tab</button>`
+          : `<p>Reload this YouTube tab once so SOP can start working on it.</p><button class="btn" id="reload">Reload tab</button>`;
+        $('reload').onclick = () => { chrome.tabs.reload(tab.id); window.close(); };
+        if ($('copyErr')) $('copyErr').onclick = () => navigator.clipboard.writeText(err).then(() => toast('Error copied'));
+      });
     };
     ask(true);
   });

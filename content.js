@@ -1,29 +1,87 @@
 /* SOP — live chords on YouTube: chord bar inside the player + practice mixer below it */
 (() => {
   'use strict';
+  window.__sopError = '';
+  try {
   // A copy left behind by an older/reloaded version can't talk to the extension any more: shut it down and take over.
   try { if (window.__sopKill) window.__sopKill(); } catch { /* ignore */ }
   document.querySelectorAll('#sop-chords-host,#sop-top-host,#sop-mix-host,#sop-sheet-host').forEach((n) => n.remove());
   window.__sopAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
 
   const C = window.SOPCore;
-  // YouTube enforces Trusted Types: plain innerHTML assignments throw ("requires 'TrustedHTML'"),
-  // which silently killed SOP before it could draw anything. Route SOP's own HTML through a policy.
-  // (Content scripts run in an isolated world, so this shim only affects SOP, never YouTube's code.)
+  // YouTube enforces Trusted Types (and limits which policy names may exist), so a plain
+  // innerHTML assignment throws "requires 'TrustedHTML'" and killed SOP before it drew anything.
+  // SOP's own HTML is therefore built node-by-node with a small parser when the browser refuses it.
+  // (Content scripts run in an isolated world, so this only changes SOP's code, never YouTube's.)
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const VOID = new Set(['input', 'br', 'img', 'hr', 'meta', 'link', 'source', 'col', 'area', 'wbr']);
+  const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' };
+  const decode = (t) => t.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, e) => ENT[e]);
+  function parseInto(parent, html) {
+    const doc = parent.ownerDocument || document;
+    const stack = [parent];
+    const top = () => stack[stack.length - 1];
+    const text = (t) => { if (t) top().appendChild(doc.createTextNode(decode(t))); };
+    const attrRe = /\s*([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?|\s*(\/?)>/y;
+    let i = 0;
+    while (i < html.length) {
+      const lt = html.indexOf('<', i);
+      if (lt < 0) { text(html.slice(i)); break; }
+      text(html.slice(i, lt));
+      if (html.startsWith('<!--', lt)) { const e = html.indexOf('-->', lt); i = e < 0 ? html.length : e + 3; continue; }
+      if (html[lt + 1] === '/') {
+        const gt = html.indexOf('>', lt), name = html.slice(lt + 2, gt).trim().toLowerCase();
+        for (let k = stack.length - 1; k > 0; k--) if ((stack[k].localName || '').toLowerCase() === name) { stack.length = k; break; }
+        i = gt + 1; continue;
+      }
+      const m = /^<([a-zA-Z][\w:-]*)/.exec(html.slice(lt, lt + 80));
+      if (!m) { text('<'); i = lt + 1; continue; }
+      const name = m[1];
+      const attrs = []; let j = lt + m[0].length, selfClose = false;
+      for (;;) {
+        attrRe.lastIndex = j;
+        const a = attrRe.exec(html);
+        if (!a) { j = html.indexOf('>', j) + 1; break; }
+        j = attrRe.lastIndex;
+        if (a[1] === undefined) { selfClose = a[5] === '/'; break; }
+        attrs.push([a[1], decode(a[2] ?? a[3] ?? a[4] ?? '')]);
+      }
+      const parentNode = top();
+      const svg = name.toLowerCase() === 'svg' || parentNode.namespaceURI === SVGNS;
+      const el = svg ? doc.createElementNS(SVGNS, name) : doc.createElement(name);
+      for (const [k, v] of attrs) { try { el.setAttribute(k, v); } catch { /* ignore bad attribute */ } }
+      parentNode.appendChild(el);
+      const lname = name.toLowerCase();
+      if (lname === 'style' || lname === 'script' || lname === 'textarea' || lname === 'title') {
+        const close = html.toLowerCase().indexOf('</' + lname, j);
+        el.textContent = html.slice(j, close < 0 ? html.length : close);
+        i = close < 0 ? html.length : html.indexOf('>', close) + 1;
+        continue;
+      }
+      if (!selfClose && !VOID.has(lname)) stack.push(el);
+      i = j;
+    }
+  }
   const ttPolicy = (() => {
     const tt = window.trustedTypes;
     if (!tt || !tt.createPolicy) return null;
-    for (const name of ['sop-html', 'sop-html-' + Math.random().toString(36).slice(2)]) {
-      try { return tt.createPolicy(name, { createHTML: (x) => x }); } catch { /* name taken or not allowed */ }
-    }
-    return tt.defaultPolicy || null;
+    try { return tt.createPolicy('sop-html', { createHTML: (x) => x }); } catch { return null; }
   })();
   const trusted = (html) => (ttPolicy && typeof html === 'string' ? ttPolicy.createHTML(html) : html);
-  if (ttPolicy && !window.__sopTTShim) {
+  if (!window.__sopTTShim) {
     window.__sopTTShim = true;
     for (const proto of [Element.prototype, ShadowRoot.prototype]) {
       const d = Object.getOwnPropertyDescriptor(proto, 'innerHTML');
-      if (d && d.set) Object.defineProperty(proto, 'innerHTML', { ...d, set(v) { d.set.call(this, trusted(v)); } });
+      if (!d || !d.set) continue;
+      Object.defineProperty(proto, 'innerHTML', {
+        ...d,
+        set(v) {
+          if (ttPolicy) { try { d.set.call(this, ttPolicy.createHTML(String(v))); return; } catch { /* fall through */ } }
+          try { d.set.call(this, v); return; } catch { /* Trusted Types refused it: build the nodes ourselves */ }
+          while (this.firstChild) this.removeChild(this.firstChild);
+          if (v != null && v !== '') parseInto(this, String(v));
+        },
+      });
     }
   }
 
@@ -800,7 +858,8 @@
         const w = window.open('', '_blank', 'width=820,height=900');
         if (w) {
           const page = sh.querySelector('.pg').cloneNode(true); page.querySelector('.act').remove();
-          w.document.write(trusted(`<html><head><meta charset="utf-8"><title>${esc(st.title)}</title><style>${sh.querySelector('style').textContent} .pg{max-height:none;width:auto}</style></head><body>${page.outerHTML}</body></html>`));
+          const html = `<html><head><meta charset="utf-8"><title>${esc(st.title)}</title><style>${sh.querySelector('style').textContent} .pg{max-height:none;width:auto}</style></head><body>${page.outerHTML}</body></html>`;
+          try { w.document.write(trusted(html)); } catch { parseInto(w.document.documentElement, html.replace(/^<html>|<\/html>$/g, '')); }
           w.document.close(); w.focus(); w.print();
         }
       }
@@ -859,6 +918,7 @@
   }
 
   (async function init() {
+   try {
     Object.assign(prefs, (await getSync('sopSettings')).sopSettings || {});
     await onNav();
     window.addEventListener('yt-navigate-finish', onNav);
@@ -875,5 +935,10 @@
       st.started = false;
       top.remove(); mix.remove();
     };
+   } catch (err) { window.__sopError = String(err && err.stack || err); console.error('[SOP] failed to start:', err); }
   })();
+  } catch (err) {
+    window.__sopError = String(err && err.stack || err);
+    console.error('[SOP] failed to start:', err);
+  }
 })();
