@@ -292,7 +292,75 @@
     return e <= a ? { string: 'E', fret: e } : { string: 'A', fret: a };
   }
 
+  /** Simplify to plain major/minor triads (keeps dim), dropping slash bass. */
+  function simplify(ch) {
+    if (!ch) return ch;
+    const id = Q[ch.q].id;
+    let q = ch.q;
+    if (id === '7' || id === 'maj7' || id === 'sus2' || id === 'sus4') q = 0;
+    else if (id === 'm7') q = 1;
+    return { r: ch.r, q, b: -1, s: ch.s };
+  }
+
+  /** Split a chord label into root / quality / bass for fancy rendering. */
+  function parts(ch, tr = 0, flats = false) {
+    if (!ch) return null;
+    return {
+      root: noteName(ch.r + tr, flats),
+      qual: Q[ch.q].suffix,
+      bass: ch.b >= 0 ? noteName(ch.b + tr, flats) : '',
+    };
+  }
+
+  /** Tempo from an onset-strength envelope sampled at `rate` Hz. Returns {bpm, phase} or null. */
+  function estimateTempo(env, rate = 100) {
+    const n = env.length;
+    if (n < rate * 6) return null;
+    // high-pass the envelope (remove slow loudness drift) and half-wave rectify
+    const win = Math.round(rate * 0.5);
+    const f = new Float32Array(n);
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      acc += env[i];
+      if (i >= win) acc -= env[i - win];
+      const mean = acc / Math.min(i + 1, win);
+      f[i] = Math.max(0, env[i] - mean);
+    }
+    const lagMin = Math.floor((60 / 200) * rate), lagMax = Math.ceil((60 / 55) * rate);
+    const scores = new Float32Array(lagMax + 2);
+    let best = -1, bestLag = 0;
+    for (let lag = lagMin; lag <= lagMax; lag++) {
+      let s = 0;
+      for (let i = 0; i + lag < n; i++) s += f[i] * f[i + lag];
+      s /= (n - lag);
+      const bpm = (60 * rate) / lag;
+      const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 115) / 0.7, 2));
+      scores[lag] = s;
+      if (s * w > best) { best = s * w; bestLag = lag; }
+    }
+    if (best <= 0) return null;
+    // the tempo weighting only picks the region; find the true (unweighted) peak nearby
+    for (let k = Math.max(lagMin, bestLag - 3); k <= Math.min(lagMax, bestLag + 3); k++) if (scores[k] > scores[bestLag]) bestLag = k;
+    // parabolic refinement
+    const a = scores[bestLag - 1] || 0, b = scores[bestLag], c = scores[bestLag + 1] || 0;
+    const d = a - 2 * b + c;
+    const lag = bestLag + (d ? Math.max(-0.5, Math.min(0.5, 0.5 * (a - c) / d)) : 0);
+    let bpm = (60 * rate) / lag;
+    while (bpm < 70) bpm *= 2;
+    while (bpm > 170) bpm /= 2;
+    // beat phase: offset that lines beats up with the strongest onsets
+    const period = (60 * rate) / bpm;
+    let bestPh = 0, bestPhS = -1;
+    for (let ph = 0; ph < period; ph++) {
+      let s = 0;
+      for (let t = ph; t < n; t += period) s += f[Math.round(t)] || 0;
+      if (s > bestPhS) { bestPhS = s; bestPh = ph; }
+    }
+    return { bpm, phase: bestPh };
+  }
+
   const api = {
+    simplify, parts, estimateTempo,
     SHARP, FLAT, Q, mod12, chromaFromSpectrum, bassFromSpectrum, classify, ChordTracker, detectKey,
     useFlats, noteName, label, keyLabel, nashville, capo, guitarShape, bassPosition, chordId,
   };

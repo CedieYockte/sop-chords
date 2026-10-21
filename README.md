@@ -9,8 +9,9 @@ INSTALL (Chrome, Edge, Brave)
 5. Pin SOP from the puzzle-piece menu so the icon is handy.
 
 USE
-1. Open any song on YouTube — the SOP panel appears on the right.
-2. Press "Start listening", then play the song.
+1. Click the SOP icon and switch on "Chord panel on YouTube" (it starts off).
+2. Open any song on YouTube. The SOP bar sits on top of the video.
+3. Press "▶ Listen", then play the song.
 3. You get, live:
    - the current chord (with slash chords like D/F#)
    - Nashville number (1, 4, 5, 6m ...) for the band
@@ -22,8 +23,25 @@ USE
    chord, click any chord to jump to it, transpose with − / +, and press
    "Copy" to paste a chord sheet (chords + numbers) into your notes or chat.
 
+ON TOP OF THE VIDEO
+- Key − / +   transpose the whole song
+- BPM − / +   nudge the detected tempo (double-click the number to reset)
+- Instrument  guitar, piano or bass shape for the current chord
+- Capo        chords switch to the shapes you play with that capo (★ = suggested)
+- Simplify    plain major/minor chords, no slash chords
+- Sheet       printable chord chart with Nashville numbers
+- Chord cards show time · beats; click one to jump there
+
+PRACTICE MIXER (below the video)
+- Vocals / Bass / Drums / Instruments with mute (M), solo (S) and volume
+- Presets: Vocals only, Instrumental, Bass focus, Rhythm only
+- Metronome locked to the song's beat (0.5× / 1× / 2×)
+- Loop A–B (or press L to loop the chord section you're on), speed 0.5×–1.25×
+- Separation uses audio filters on your computer (not AI), so it's
+  approximate and works best on stereo recordings.
+
 TIPS
-- Drag the panel by its header; "–" shrinks it to just the chord.
+- ▴ collapses the bar to one line; ✕ turns SOP off.
 - If no chords show, reload the YouTube page and press Start again.
   Audio-equalizer or volume-booster extensions can block SOP.
 - Detection runs fully on your computer; nothing is uploaded.

@@ -1,6 +1,6 @@
 const C = window.SOPCore;
 const REPO = 'https://github.com/CedieYockte/sop-chords';
-const defaults = { enabled: true, accidentals: 'auto', minimized: false, pos: null, diagrams: true };
+const defaults = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 let prefs = { ...defaults };
@@ -21,12 +21,12 @@ const keyOf = (rec) => {
 // ---------- settings ----------
 function renderPrefs() {
   $('enabled').checked = prefs.enabled;
-  $('diagrams').checked = prefs.diagrams;
+  $('diagrams').checked = prefs.mixer;
   document.querySelectorAll('#acc button').forEach((b) => b.classList.toggle('on', b.dataset.v === prefs.accidentals));
 }
-const savePrefs = () => chrome.storage.sync.set({ sopPrefs: prefs });
+const savePrefs = () => chrome.storage.sync.set({ sopSettings: prefs });
 $('enabled').addEventListener('change', (e) => { prefs.enabled = e.target.checked; savePrefs(); loadContext(); });
-$('diagrams').addEventListener('change', (e) => { prefs.diagrams = e.target.checked; savePrefs(); });
+$('diagrams').addEventListener('change', (e) => { prefs.mixer = e.target.checked; savePrefs(); });
 $('acc').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   prefs.accidentals = b.dataset.v; savePrefs(); renderPrefs(); loadCharts();
@@ -101,7 +101,7 @@ function loadContext() {
       pills.push(`<b>${st.chords}</b> chords`);
       $('ctx').innerHTML = `<div class="title">${st.started ? '<span class="live"></span>' : ''}${esc(st.title || 'This video')}</div>
         <div class="info">${pills.map((p) => `<span class="pill">${p}</span>`).join('')}</div>
-        <button class="btn primary" id="show">${st.started ? 'Show SOP panel' : prefs.enabled ? 'Open SOP panel' : 'Turn on SOP for this video'}</button>`;
+        <button class="btn primary" id="show">${prefs.enabled ? 'Show chords on this video' : 'Turn on chords for this video'}</button>`;
       $('show').onclick = () => {
         if (!prefs.enabled) { prefs.enabled = true; savePrefs(); renderPrefs(); }
         chrome.tabs.sendMessage(tab.id, { type: 'sop:show' }, () => window.close());
@@ -126,7 +126,7 @@ $('lShare').onclick = async () => {
 $('feedback').onclick = (e) => { e.preventDefault(); openTab(REPO + '/issues/new'); };
 $('ver').textContent = 'v' + chrome.runtime.getManifest().version;
 
-chrome.storage.sync.get('sopPrefs', (d) => {
-  prefs = Object.assign({}, defaults, d.sopPrefs || {});
+chrome.storage.sync.get('sopSettings', (d) => {
+  prefs = Object.assign({}, defaults, d.sopSettings || {});
   renderPrefs(); loadCharts(); loadContext();
 });
