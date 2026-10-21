@@ -92,7 +92,7 @@
   const ROOT_HUES = [0, 25, 48, 75, 110, 150, 175, 195, 220, 255, 285, 320];
 
   // ---------------- state ----------------
-  const prefs = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false };
+  const prefs = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false, listen: false };
   const st = {
     vid: null, title: '', segs: [], keyAcc: new Float32Array(12), key: null,
     transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0,
@@ -375,7 +375,7 @@
     const a = b.dataset.a;
     if (a === 'k+' || a === 'k-') { st.transpose = Math.max(-11, Math.min(11, st.transpose + (a === 'k+' ? 1 : -1))); changed(); }
     else if (a === 'b+' || a === 'b-') { const cur = Math.round(bpm() || 100); st.bpmManual = Math.max(30, Math.min(260, cur + (a === 'b+' ? 1 : -1))); changed(); }
-    else if (a === 'listen') { st.started ? stop() : start(); }
+    else if (a === 'listen') { if (st.started) { prefs.listen = false; savePrefs(); stop(); } else { prefs.listen = true; savePrefs(); start(); } }
     else if (a === 'simp') { prefs.simplify = !prefs.simplify; savePrefs(); changed(); }
     else if (a === 'sheet') openSheet();
     else if (a === 'mixer') { prefs.mixer = !prefs.mixer; savePrefs(); placeHosts(); renderToolbar(); }
@@ -675,7 +675,7 @@
 
   // ---------- detection loops ----------
   let tickTimer = null, fluxTimer = null, tempoTimer = null;
-  const BLOCKED = "SOP can't hear this video — another extension (like Chord Lens or an equalizer) is already using its sound. Turn that extension off, reload the page, and press Listen.";
+  const BLOCKED = "SOP can't hear this video. Press F5 to reload the page (this happens right after SOP is updated). If it keeps happening, another extension like Chord Lens or an equalizer is using the sound — turn it off.";
   function tick() {
     const v = getVideo(); if (!v || !st.vid || !A) return;
     if (v !== hookedVideo) { try { hook(v); } catch { stop(); topMsg(BLOCKED); return; } }
@@ -817,10 +817,10 @@
     }
   }
 
-  function start() {
+  function start(auto) {
     const v = getVideo();
     if (!v) return;
-    try { hook(v); } catch { topMsg(BLOCKED); return; }
+    try { hook(v); } catch { topMsg(BLOCKED); prefs.listen = false; renderToolbar(); return; }
     st.started = true; st.segFloor = v.currentTime; tracker.reset(); prevSpec = null; flux.length = 0;
     clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);
     tickTimer = setInterval(tick, FRAME_MS);
@@ -828,8 +828,18 @@
     tempoTimer = setInterval(tempoTick, 4000);
     topMsg('');
     applyMix();
-    if (v.paused) v.play().catch(() => {});
+    if (v.paused && !auto) v.play().catch(() => {});
     renderToolbar(); renderCards(true);
+  }
+  function autoResume() {
+    if (!prefs.listen || !prefs.enabled || !st.vid || st.started) return;
+    const go = () => { if (prefs.listen && prefs.enabled && st.vid && !st.started) start(true); };
+    if (navigator.userActivation && navigator.userActivation.hasBeenActive) go();
+    else {
+      // browsers only allow audio after the first click/key on the page
+      const once = () => { document.removeEventListener('pointerdown', once, true); document.removeEventListener('keydown', once, true); go(); };
+      document.addEventListener('pointerdown', once, true); document.addEventListener('keydown', once, true);
+    }
   }
   function stop() {
     const v = getVideo();
@@ -915,7 +925,7 @@
     tracker.reset(); flux.length = 0; prevSpec = null; Object.keys(waves).forEach((k) => (waves[k] = []));
     if (st.started && !vid) stop();
     placeHosts();
-    if (vid) await loadChart(vid);
+    if (vid) { await loadChart(vid); autoResume(); }
     setTimeout(() => { if (st.vid === vid) st.title = songTitle(); }, 1500);
   }
 
@@ -947,6 +957,7 @@
    try {
     Object.assign(prefs, (await getSync('sopSettings')).sopSettings || {});
     await onNav();
+    autoResume();
     console.log('[SOP] ready — panel', prefs.enabled ? 'ON' : 'OFF (switch it on in the SOP popup)', '| player found:', !!getPlayer(), '| video id:', st.vid);
     window.addEventListener('yt-navigate-finish', onNav);
     window.addEventListener('beforeunload', saveChart);
