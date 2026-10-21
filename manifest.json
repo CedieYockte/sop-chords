@@ -2,19 +2,36 @@
   "manifest_version": 3,
   "name": "SOP — Live Chords for YouTube",
   "short_name": "SOP",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Hear a song on YouTube, see its chords live: key, capo, Nashville numbers, guitar shapes, bass notes and a saved chord chart.",
-  "permissions": ["storage"],
-  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
     "default_title": "SOP — Live Chords",
     "default_popup": "popup.html",
-    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
-      "js": ["sop-core.js", "content.js"],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "js": [
+        "sop-core.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

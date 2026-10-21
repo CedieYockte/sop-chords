@@ -504,5 +504,30 @@
       });
     }
   }
+  // ---------- popup messages ----------
+  if (alive()) {
+    chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+      if (msg?.type === 'sop:status') {
+        const v = getVideo();
+        const live = state.started ? tracker.current : (v ? (segAt(v.currentTime) || {}).c : null);
+        const cp = C.capo(state.key, state.transpose);
+        reply({
+          vid: state.vid, title: state.title || songTitle(), started: state.started,
+          chord: live ? lbl(live) : '', chords: state.segs.length,
+          key: state.key ? C.keyLabel(state.key, state.transpose, flats()) : '',
+          capo: cp && cp.fret ? `Capo ${cp.fret}` : '',
+        });
+      } else if (msg?.type === 'sop:show') {
+        prefs.enabled = true;
+        prefs.minimized = false;
+        el.panel.classList.remove('min');
+        el.min.textContent = '–';
+        prefs.pos = null; host.style.left = ''; host.style.top = '80px'; host.style.right = '24px';
+        savePrefs(); updateVisibility();
+        reply({ ok: true });
+      }
+    });
+  }
+
   init();
 })();
