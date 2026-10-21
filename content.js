@@ -86,10 +86,11 @@
     }
   }
 
-  const LAG = 0.5;        // detection latency compensation (s)
+  const LAG = 0.65;       // live detection latency compensation (s)
   const FRAME_MS = 100;   // chord frames
   const FLUX_MS = 20;     // onset frames for tempo (50 Hz)
   const SCAN_RATE = 4;    // scan the whole song silently at 4x speed
+  const LEAD = 0.12;      // show a chord change this much early, so you see it as you play it
   const ROOT_HUES = [0, 25, 48, 75, 110, 150, 175, 195, 220, 255, 285, 320];
 
   // ---------------- state ----------------
@@ -100,6 +101,7 @@
     started: false, openSeg: null, segFloor: 0, lastT: 0, frames: 0, silent: 0,
     loop: { a: null, b: null, on: false },
     scan: null, complete: false,
+    rec: [], onsets: [], tc: 0, ts: 0,   // scan recording: frames, onsets, tuning stats
   };
   const tracker = new C.ChordTracker({ hold: 4 });
   let segVer = 0;
@@ -686,6 +688,15 @@
   }
   function changed() { shapeId = ''; renderToolbar(); renderCards(true); scheduleSave(); uiTick(); }
 
+  // ---------- song clock ----------
+  const clk = { ct: -1, at: 0 };
+  function songTime(v) {
+    const r = v.playbackRate || 1;
+    if (v.currentTime !== clk.ct) { clk.ct = v.currentTime; clk.at = ctx.currentTime; return clk.ct; }
+    return clk.ct + Math.min(0.4, ctx.currentTime - clk.at) * r;
+  }
+  const centsNow = () => C.tuningCents(st.tc, st.ts);
+
   // ---------- detection loops ----------
   let tickTimer = null, fluxTimer = null, tempoTimer = null;
   const BLOCKED = "SOP can't hear this video. Press F5 to reload the page (this happens right after SOP is updated). If it keeps happening, another extension like Chord Lens or an equalizer is using the sound — turn it off.";
@@ -703,12 +714,18 @@
     if (!playing || isAd()) { if (st.openSeg) closeSeg(Math.max(st.segFloor, v.currentTime - LAG)); return; }
     A.main.getFloatFrequencyData(A.mainBuf);
     const sr = ctx.sampleRate, n = A.main.fftSize;
-    const main = C.chromaFromSpectrum(A.mainBuf, sr, n, 80, 1800);
-    const bass = C.bassFromSpectrum(A.mainBuf, sr, n);
+    const raw = C.chroma36FromSpectrum(A.mainBuf, sr, n, 80, 1800);
+    st.tc = st.tc * 0.9995 + raw.tc; st.ts = st.ts * 0.9995 + raw.ts;   // running tuning estimate
+    const cents = centsNow();
+    const main = { chroma: C.fold36(raw.c36, cents), energy: raw.energy };
+    const bm = C.bassMidiFromSpectrum(A.mainBuf, sr, n);
+    const bass = new Float32Array(12);
+    if (bm >= 0) bass[C.mod12(Math.round(bm - cents / 100))] = 1;
+    if (st.scan) st.rec.push({ t: songTime(v) - (n / 2 / sr) * (v.playbackRate || 1), c36: raw.c36, bm, en: raw.energy });
     if (main.energy === 0) { if (++st.silent === 40 && !v.muted && v.volume > 0) topMsg(BLOCKED); }
     else if (st.silent) { st.silent = 0; topMsg(''); }
     const res = tracker.push(main.chroma, bass, main.energy);
-    const lag = st.scan ? 0.3 * (v.playbackRate || 1) : LAG;
+    const lag = st.scan ? 0.3 * (v.playbackRate || 1) : LAG;   // live display only; the scan result is re-timed afterwards
     const t = v.currentTime, tc = Math.max(st.segFloor, t - lag);
     if (res.voiced && res.smooth) {
       for (let i = 0; i < 12; i++) st.keyAcc[i] += res.smooth[i];
@@ -731,6 +748,7 @@
     if (prevSpec) for (let k = 2; k < k1; k++) { const d = A.fluxBuf[k] - prevSpec[k]; if (d > 0 && A.fluxBuf[k] > -90 && Number.isFinite(d)) s += d; }
     const tmp = prevSpec || new Float32Array(A.fluxBuf.length); prevSpec = A.fluxBuf; A.fluxBuf = tmp;   // swap, no allocation
     flux.push({ v: s, p: ctx.currentTime * 1000 });   // audio clock = when the analysed samples were rendered
+    if (st.scan) st.onsets.push({ t: songTime(v) - (A.fluxAn.fftSize / 2 / ctx.sampleRate) * (v.playbackRate || 1), v: s });
     if (flux.length > 1500) flux.splice(0, flux.length - 1500);
   }
   function tempoTick() {
@@ -820,7 +838,7 @@
     const t = v.currentTime;
     if (st.loop.on && st.loop.a != null && st.loop.b != null && t >= st.loop.b) v.currentTime = st.loop.a;
     renderCards();
-    updateCards(t);
+    updateCards(t + (v.paused ? 0 : LEAD * (v.playbackRate || 1)));
     const live = st.started && !v.paused && st.openSeg ? st.openSeg.c : null;
     const at = live || (cardData.find((d) => t >= d.s && t < d.e) || {}).raw || null;
     renderShape(at);
@@ -859,6 +877,7 @@
     st.scan = { rate: v.playbackRate || 1, time: v.currentTime, muted: v.muted, paused: v.paused };
     // fresh chart for a clean result
     st.segs = []; st.keyAcc = new Float32Array(12); st.key = null; st.complete = false; st.openSeg = null; st.bpmAuto = 0; segVer++;
+    st.rec = []; st.onsets = []; st.tc = 0; st.ts = 0;
     A.master.gain.setTargetAtTime(0, ctx.currentTime, 0.02);   // silent: the user doesn't hear the fast playback
     v.muted = false;                                            // the element must output sound for analysis
     st.segFloor = 0;
@@ -880,6 +899,18 @@
       if (done) { v.pause(); v.currentTime = 0; } else { v.currentTime = sc.time; if (sc.paused) v.pause(); }
     }
     if (A) A.master.gain.setTargetAtTime(1, ctx.currentTime, 0.05);
+    if (done && st.rec.length > 20) {
+      // best chord sequence for the whole song, in the recording's own tuning, lined up with the strums
+      if (window.__sopKeepScan) window.__sopLastScan = { rec: st.rec.map((f) => ({ t: f.t, c36: Array.from(f.c36), bm: f.bm, en: f.en })), onsets: st.onsets.slice(), tc: st.tc, ts: st.ts };   // test hook
+      const res = C.decodeSong(st.rec, { cents: centsNow() });
+      const segs = res.segs;   // decoded boundaries already land within ~0.1 s; onset snapping made them worse
+      st.segs = segs.map((x) => ({ s: Math.max(0, x.s), e: x.e, c: { r: x.r, q: x.q, b: x.b, s: 1 } }));
+      const lastSeg = st.segs[st.segs.length - 1], dur = v && v.duration;
+      if (lastSeg && dur && dur - lastSeg.e < 2) lastSeg.e = dur;   // the scan stops just before the end
+      st.keyAcc = res.keyAcc; segVer++;
+      console.log('[SOP] scan decoded:', segs.length, 'chords, tuning', Math.round(res.cents), 'cents');
+    }
+    st.rec = []; st.onsets = [];
     if (done) {
       st.complete = true;
       let tot = 0; for (let i = 0; i < 12; i++) tot += st.keyAcc[i];
@@ -1048,13 +1079,14 @@
     window.addEventListener('yt-navigate-finish', onNav);
     window.addEventListener('beforeunload', saveChart);
     const iv1 = setInterval(() => { if (getVid() !== st.vid) onNav(); else if (prefs.enabled) placeHosts(); }, 1000);
-    const iv2 = setInterval(uiTick, 200);
+    const iv2 = setInterval(uiTick, 100);
     let dead = false;
     let mixOnScreen = false;
     const io = new IntersectionObserver((es) => { mixOnScreen = es.some((e) => e.isIntersecting); setStemBranch(); }, { threshold: 0 });
     io.observe(mix);
     const iv3 = setInterval(() => { if (!dead && prefs.enabled && mixOnScreen && !document.hidden) drawMixer(getVideo()); }, 66);
     window.__sopMixVisible = () => mixOnScreen;
+    window.__sopDebugSegs = () => displaySegs().map((d) => ({ s: d.s, e: d.e, c: C.label(d.raw, 0, false) }));   // for testing
     window.__sopKill = () => {
       dead = true;
       clearInterval(iv1); clearInterval(iv2); clearInterval(iv3); io.disconnect(); clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);

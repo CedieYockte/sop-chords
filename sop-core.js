@@ -12,8 +12,8 @@
     { id: '7',    suffix: '7',    iv: [0, 4, 7, 10], w: [1, 0.9, 0.7, 0.65], pen: 0.035 },
     { id: 'maj7', suffix: 'maj7', iv: [0, 4, 7, 11], w: [1, 0.9, 0.7, 0.65], pen: 0.035 },
     { id: 'm7',   suffix: 'm7',   iv: [0, 3, 7, 10], w: [1, 0.9, 0.7, 0.65], pen: 0.035 },
-    { id: 'sus2', suffix: 'sus2', iv: [0, 2, 7],     w: [1, 0.85, 0.8],     pen: 0.05 },
-    { id: 'sus4', suffix: 'sus4', iv: [0, 5, 7],     w: [1, 0.85, 0.8],     pen: 0.05 },
+    { id: 'sus2', suffix: 'sus2', iv: [0, 2, 7],     w: [1, 0.85, 0.8],     pen: 0.08 },
+    { id: 'sus4', suffix: 'sus4', iv: [0, 5, 7],     w: [1, 0.85, 0.8],     pen: 0.08 },
     { id: 'dim',  suffix: 'dim',  iv: [0, 3, 6],     w: [1, 0.9, 0.8],      pen: 0.07 },
   ];
 
@@ -29,6 +29,26 @@
   }
 
   const mod12 = (x) => ((x % 12) + 12) % 12;
+
+  // Harmonic-aware templates: real notes also sound overtones (octave, fifth, major third...),
+  // so e.g. a minor chord's root adds a little major third. Modelling that stops minor chords
+  // being read as major. Used by the whole-song decoder.
+  const HARM = [[0, 1], [12, 0.6], [19, 0.36], [24, 0.22], [28, 0.13], [31, 0.08]];
+  const H_TEMPLATES = [];
+  function buildHarmTemplates(decay) {
+    H_TEMPLATES.length = 0;
+    for (let r = 0; r < 12; r++) {
+      Q.forEach((q, qi) => {
+        const v = new Float32Array(12);
+        q.iv.forEach((iv, j) => {
+          HARM.forEach(([st, w], h) => { v[(r + iv + st) % 12] += q.w[j] * Math.pow(decay, h); });
+        });
+        const n = Math.hypot(...v);
+        for (let i = 0; i < 12; i++) v[i] /= n;
+        H_TEMPLATES.push({ r, qi, v });
+      });
+    }
+  }
 
   function normMax(v) {
     let m = 0;
@@ -292,6 +312,177 @@
     return e <= a ? { string: 'E', fret: e } : { string: 'A', fret: a };
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Whole-song analysis (used by "Scan song"): 36-bin chroma (3 bins per semitone, untuned) is
+  // recorded per frame; after the scan the recording's tuning is measured, the chroma is folded
+  // to 12 tuned pitch classes, and the best chord sequence for the WHOLE song is found with a
+  // Viterbi search (stays on a chord unless the evidence for a change is sustained).
+  // ---------------------------------------------------------------------------------------------
+
+  /** 36-bin untuned chroma + tuning statistics from one spectrum. */
+  function chroma36FromSpectrum(db, sampleRate, fftSize, fmin, fmax) {
+    const c = new Float32Array(36);
+    const binHz = sampleRate / fftSize;
+    const k0 = Math.max(2, Math.floor(fmin / binHz)), k1 = Math.min(db.length - 2, Math.ceil(fmax / binHz));
+    let energy = 0, tc = 0, ts = 0;
+    for (let k = k0; k <= k1; k++) {
+      const v = db[k];
+      if (!(v > -110) || v < db[k - 1] || v < db[k + 1]) continue;
+      const a = db[k - 1], b = db[k + 1], denom = a - 2 * v + b;
+      const p = Number.isFinite(denom) && denom !== 0 ? 0.5 * (a - b) / denom : 0;
+      const f = (k + Math.max(-0.5, Math.min(0.5, p))) * binHz;
+      const midi = 69 + 12 * Math.log2(f / 440);
+      const mag = Math.pow(10, v / 20);
+      const x = 3 * midi, xi = Math.floor(x), fr = x - xi;      // split between the two nearest 1/3-semitone bins
+      c[((xi % 36) + 36) % 36] += mag * (1 - fr);
+      c[(((xi + 1) % 36) + 36) % 36] += mag * fr;
+      const ang = 2 * Math.PI * midi;
+      tc += mag * Math.cos(ang); ts += mag * Math.sin(ang);
+      energy += mag * mag;
+    }
+    return { c36: c, energy, tc, ts };
+  }
+
+  /** Lowest strong note in the bass range as an (untuned) fractional MIDI number, or -1. */
+  function bassMidiFromSpectrum(db, sampleRate, fftSize) {
+    const binHz = sampleRate / fftSize;
+    const k0 = Math.max(2, Math.floor(35 / binHz)), k1 = Math.min(db.length - 2, Math.ceil(300 / binHz));
+    let maxMag = 0; const peaks = [];
+    for (let k = k0; k <= k1; k++) {
+      const v = db[k];
+      if (!(v > -110) || v < db[k - 1] || v < db[k + 1]) continue;
+      const mag = Math.pow(10, v / 20); peaks.push([k, v, mag]); if (mag > maxMag) maxMag = mag;
+    }
+    for (const [k, v, mag] of peaks) {
+      if (mag < maxMag * 0.35) continue;
+      const a = db[k - 1], b = db[k + 1], denom = a - 2 * v + b;
+      const p = Number.isFinite(denom) && denom !== 0 ? 0.5 * (a - b) / denom : 0;
+      return 69 + 12 * Math.log2(((k + Math.max(-0.5, Math.min(0.5, p))) * binHz) / 440);
+    }
+    return -1;
+  }
+
+  const tuningCents = (tc, ts) => (tc || ts ? (Math.atan2(ts, tc) / (2 * Math.PI)) * 100 : 0);
+
+  /** Fold 36-bin chroma to 12 tuned pitch classes. */
+  function fold36(c36, cents) {
+    const out = new Float32Array(12), shift = cents / (100 / 3);   // tuning offset in 1/3-semitone bins
+    for (let pc = 0; pc < 12; pc++) {
+      const center = 3 * pc + shift;
+      for (let d = -1; d <= 1; d += 0.5) {                       // ±1/3 semitone: no leakage into neighbouring notes
+        const x = center + d, xi = Math.floor(x), fr = x - xi;
+        const w = 1 - Math.abs(d) * 0.6;
+        const val = c36[((xi % 36) + 36) % 36] * (1 - fr) + c36[(((xi + 1) % 36) + 36) % 36] * fr;
+        out[pc] += w * val;
+      }
+    }
+    return out;
+  }
+
+  function chordScore(c, bass, t) {   // c: centred, unit-norm chroma; bass: 0..1 per pitch class
+    let s = 0;
+    for (let i = 0; i < 12; i++) s += c[i] * t.v[i];
+    return s + 0.15 * bass[t.r] - Q[t.qi].pen;
+  }
+  function centre(chroma) {
+    const c = new Float32Array(12);
+    let mean = 0;
+    for (let i = 0; i < 12; i++) mean += chroma[i];
+    mean /= 12;
+    for (let i = 0; i < 12; i++) c[i] = Math.max(0, chroma[i] - mean * 0.6);
+    const n = Math.hypot(...c);
+    if (n > 1e-9) for (let i = 0; i < 12; i++) c[i] /= n;
+    return n > 1e-9 ? c : null;
+  }
+
+  /**
+   * frames: [{ t, c36, bm, en }] in song time order. Returns { segs:[{s,e,r,q,b}], cents, keyAcc }.
+   * switchCost: how much sustained evidence a chord change needs (higher = steadier).
+   */
+  function decodeSong(frames, opts = {}) {
+    const N = frames.length;
+    if (!N) return { segs: [], cents: 0, keyAcc: new Float32Array(12) };
+    const cents = opts.cents || 0, switchCost = opts.switchCost ?? 0.9, rad = opts.smooth ?? 1;
+    let peakE = 0; for (const f of frames) if (f.en > peakE) peakE = f.en;
+    // tuned 12-bin chroma per frame, normalised
+    const ch = frames.map((f) => normMax(fold36(f.c36, cents)));
+    const bassPc = frames.map((f) => (f.bm >= 0 ? mod12(Math.round(f.bm - cents / 100)) : -1));
+    const keyAcc = new Float32Array(12);
+    if (opts.harm) buildHarmTemplates(opts.harm);
+    const TPL = opts.harm ? H_TEMPLATES : TEMPLATES;
+    const K = TPL.length, NS = K + 1;                           // last state = no chord
+    const em = new Float32Array(N * NS);
+    for (let i = 0; i < N; i++) {
+      // short centred smoothing of chroma and bass votes
+      const sm = new Float32Array(12), bs = new Float32Array(12);
+      for (let j = Math.max(0, i - rad); j <= Math.min(N - 1, i + rad); j++) {
+        for (let k = 0; k < 12; k++) sm[k] += ch[j][k];
+      }
+      for (let j = Math.max(0, i - rad - 1); j <= Math.min(N - 1, i + rad + 1); j++) if (bassPc[j] >= 0) bs[bassPc[j]] += 1;
+      const bn = normMax(bs);
+      const voiced = frames[i].en > peakE * 0.004;
+      if (voiced) for (let k = 0; k < 12; k++) keyAcc[k] += ch[i][k];
+      const c = voiced ? centre(sm) : null;
+      for (let k = 0; k < K; k++) em[i * NS + k] = c ? chordScore(c, bn, TPL[k]) : 0;
+      em[i * NS + K] = c ? 0.5 : 1.2;
+    }
+    // Viterbi with a uniform switch cost (O(N·K))
+    const score = new Float32Array(NS), back = new Int16Array(N * NS);
+    for (let k = 0; k < NS; k++) score[k] = em[k];
+    for (let i = 1; i < N; i++) {
+      let best = -1e9, bi = 0;
+      for (let k = 0; k < NS; k++) if (score[k] > best) { best = score[k]; bi = k; }
+      for (let k = 0; k < NS; k++) {
+        const stay = score[k], jump = best - switchCost;
+        if (stay >= jump) { score[k] = stay + em[i * NS + k]; back[i * NS + k] = k; }
+        else { score[k] = jump + em[i * NS + k]; back[i * NS + k] = bi; }
+      }
+    }
+    let k = 0, best = -1e9;
+    for (let s = 0; s < NS; s++) if (score[s] > best) { best = score[s]; k = s; }
+    const path = new Int16Array(N);
+    for (let i = N - 1; i >= 0; i--) { path[i] = k; k = back[i * NS + k]; }
+    // path -> segments, with a slash-bass vote per segment
+    const segs = [];
+    let st0 = 0;
+    for (let i = 1; i <= N; i++) {
+      if (i < N && path[i] === path[st0]) continue;
+      const state = path[st0];
+      if (state !== K) {
+        const t = TPL[state];
+        const votes = new Float32Array(12); let tot = 0;
+        for (let j = st0; j < i; j++) if (bassPc[j] >= 0) { votes[bassPc[j]]++; tot++; }
+        let bp = -1, bv = 0;
+        for (let p = 0; p < 12; p++) if (votes[p] > bv) { bv = votes[p]; bp = p; }
+        const tones = Q[t.qi].iv.map((iv) => (t.r + iv) % 12);
+        const b = bp >= 0 && bp !== t.r && tones.includes(bp) && tot && bv / tot > 0.5 && votes[t.r] / tot < 0.25 ? bp : -1;
+        segs.push({ s: frames[st0].t, e: i < N ? frames[i].t : frames[N - 1].t + 0.1, r: t.r, q: t.qi, b });
+      }
+      st0 = i;
+    }
+    return { segs, cents, keyAcc };
+  }
+
+  /** Move each chord change to the strongest onset (strum / hit) within ±win seconds. */
+  function snapToOnsets(segs, onsets, win = 0.3) {
+    if (!onsets || onsets.length < 20) return segs;
+    const vals = onsets.map((o) => o.v).sort((a, b) => a - b);
+    const med = vals[Math.floor(vals.length / 2)] || 0;
+    let j = 0;
+    for (let i = 1; i < segs.length; i++) {
+      const b = segs[i].s;
+      while (j < onsets.length && onsets[j].t < b - win) j++;
+      let bt = -1, bv = med * 2.5;
+      for (let k = j; k < onsets.length && onsets[k].t <= b + win; k++) {
+        // prefer onsets close to the estimate: small distance penalty
+        const v = onsets[k].v * (1 - 0.6 * Math.abs(onsets[k].t - b) / win);
+        if (v > bv) { bv = v; bt = onsets[k].t; }
+      }
+      if (bt >= 0 && bt > segs[i - 1].s + 0.3) { segs[i - 1].e = bt; segs[i].s = bt; }
+    }
+    return segs;
+  }
+
   /** Simplify to plain major/minor triads (keeps dim), dropping slash bass. */
   function simplify(ch) {
     if (!ch) return ch;
@@ -360,6 +551,7 @@
   }
 
   const api = {
+    chroma36FromSpectrum, bassMidiFromSpectrum, tuningCents, fold36, decodeSong, snapToOnsets, normMax,
     simplify, parts, estimateTempo,
     SHARP, FLAT, Q, mod12, chromaFromSpectrum, bassFromSpectrum, classify, ChordTracker, detectKey,
     useFlats, noteName, label, keyLabel, nashville, capo, guitarShape, bassPosition, chordId,
