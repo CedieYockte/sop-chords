@@ -1,7 +1,8 @@
 /* SOP — live chords on YouTube: chord bar inside the player + practice mixer below it */
 (() => {
   'use strict';
-  try { if (window.__sopAlive && window.__sopAlive()) return; } catch { /* stale copy from an older version */ }
+  // A copy left behind by an older/reloaded version can't talk to the extension any more: shut it down and take over.
+  try { if (window.__sopKill) window.__sopKill(); } catch { /* ignore */ }
   document.querySelectorAll('#sop-chords-host,#sop-top-host,#sop-mix-host,#sop-sheet-host').forEach((n) => n.remove());
   window.__sopAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
 
@@ -842,9 +843,17 @@
     await onNav();
     window.addEventListener('yt-navigate-finish', onNav);
     window.addEventListener('beforeunload', saveChart);
-    setInterval(() => { if (getVid() !== st.vid) onNav(); else if (prefs.enabled) placeHosts(); }, 1000);
-    setInterval(uiTick, 150);
-    const draw = () => { if (prefs.enabled) drawMixer(getVideo()); requestAnimationFrame(draw); };
+    const iv1 = setInterval(() => { if (getVid() !== st.vid) onNav(); else if (prefs.enabled) placeHosts(); }, 1000);
+    const iv2 = setInterval(uiTick, 150);
+    let dead = false;
+    const draw = () => { if (dead) return; if (prefs.enabled) drawMixer(getVideo()); requestAnimationFrame(draw); };
     requestAnimationFrame(draw);
+    window.__sopKill = () => {
+      dead = true;
+      clearInterval(iv1); clearInterval(iv2); clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);
+      window.removeEventListener('yt-navigate-finish', onNav);
+      st.started = false;
+      top.remove(); mix.remove();
+    };
   })();
 })();
