@@ -48,7 +48,7 @@ function loadCharts() {
     $('clearAll').style.display = charts.length ? '' : 'none';
     if (!charts.length) { box.innerHTML = '<div class="empty">Songs you play with SOP will show here.</div>'; return; }
     charts.sort((a, b) => (b.u || 0) - (a.u || 0));
-    box.innerHTML = charts.slice(0, 5).map((c) => {
+    box.innerHTML = charts.slice(0, 3).map((c) => {
       const k = keyOf(c);
       return `<div class="song" data-vid="${esc(c.vid)}"><span class="k">${k ? esc(k.short) : '?'}</span>
         <span class="t">${esc(c.t || 'Untitled video')}</span><span class="n">${c.s.length} chords</span></div>`;
@@ -82,18 +82,23 @@ function loadContext() {
     const isVideo = onYT && (url.pathname === '/watch' || url.pathname.startsWith('/shorts/'));
     if (!isVideo) return ctxNotYouTube(onYT);
 
-    chrome.tabs.sendMessage(tab.id, { type: 'sop:status' }, (st) => {
+    const ask = (retry) => chrome.tabs.sendMessage(tab.id, { type: 'sop:status' }, (st) => {
       if (chrome.runtime.lastError || !st) {
-        $('ctx').innerHTML = `<p>Reload this YouTube tab once so SOP can start working on it.</p>
-          <button class="btn" id="reload">Reload tab</button>`;
-        $('reload').onclick = () => { chrome.tabs.reload(tab.id); window.close(); };
-        return;
+        if (retry) {
+          // Tab was open before SOP was installed/updated: load SOP into it now.
+          chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['sop-core.js', 'content.js'] }, () => {
+            if (chrome.runtime.lastError) return showReload();
+            setTimeout(() => ask(false), 400);
+          });
+          return;
+        }
+        return showReload();
       }
       const pills = [];
       if (st.chord) pills.push(`Now <b>${esc(st.chord)}</b>`);
       if (st.key) pills.push(`Key <b>${esc(st.key)}</b>`);
       if (st.capo) pills.push(esc(st.capo));
-      pills.push(`<b>${st.chords}</b> chords charted`);
+      pills.push(`<b>${st.chords}</b> chords`);
       $('ctx').innerHTML = `<div class="title">${st.started ? '<span class="live"></span>' : ''}${esc(st.title || 'This video')}</div>
         <div class="info">${pills.map((p) => `<span class="pill">${p}</span>`).join('')}</div>
         <button class="btn primary" id="show">${st.started ? 'Show SOP panel' : prefs.enabled ? 'Open SOP panel' : 'Turn on SOP for this video'}</button>`;
@@ -102,6 +107,12 @@ function loadContext() {
         chrome.tabs.sendMessage(tab.id, { type: 'sop:show' }, () => window.close());
       };
     });
+    const showReload = () => {
+      $('ctx').innerHTML = `<p>Reload this YouTube tab once so SOP can start working on it.</p>
+        <button class="btn" id="reload">Reload tab</button>`;
+      $('reload').onclick = () => { chrome.tabs.reload(tab.id); window.close(); };
+    };
+    ask(true);
   });
 }
 

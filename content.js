@@ -1,8 +1,10 @@
 /* SOP — live chord panel for YouTube */
 (() => {
   'use strict';
-  if (window.__sopLoaded) return;
-  window.__sopLoaded = true;
+  // Skip if a live copy is already running; replace a stale copy left behind by an extension update.
+  try { if (window.__sopAlive && window.__sopAlive()) return; } catch { /* stale copy */ }
+  document.getElementById('sop-chords-host')?.remove();
+  window.__sopAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
 
   const C = window.SOPCore;
   const LAG = 0.5;              // seconds of detection latency to compensate on the timeline
