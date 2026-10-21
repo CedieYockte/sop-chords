@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   window.__sopError = '';
+  console.log('[SOP] loaded v' + (chrome.runtime?.getManifest?.().version || '?') + ' on', location.href);
   try {
   // A copy left behind by an older/reloaded version can't talk to the extension any more: shut it down and take over.
   try { if (window.__sopKill) window.__sopKill(); } catch { /* ignore */ }
@@ -921,6 +922,7 @@
    try {
     Object.assign(prefs, (await getSync('sopSettings')).sopSettings || {});
     await onNav();
+    console.log('[SOP] ready — panel', prefs.enabled ? 'ON' : 'OFF (switch it on in the SOP popup)', '| player found:', !!getPlayer(), '| video id:', st.vid);
     window.addEventListener('yt-navigate-finish', onNav);
     window.addEventListener('beforeunload', saveChart);
     const iv1 = setInterval(() => { if (getVid() !== st.vid) onNav(); else if (prefs.enabled) placeHosts(); }, 1000);
