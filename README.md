@@ -11,7 +11,9 @@ INSTALL (Chrome, Edge, Brave)
 USE
 1. Click the SOP icon and switch on "Chord panel on YouTube" (it starts off).
 2. Open any song on YouTube. The SOP bar sits on top of the video.
-3. Press "▶ Listen", then play the song.
+3. Press "⚡ Scan song". SOP plays the song silently at 4× speed and lists every
+   chord (a 7-minute song takes under 2 minutes). Then press play: the chord
+   cards step through the song as it plays. (Or press "▶ Listen" to detect live.)
 3. You get, live:
    - the current chord (with slash chords like D/F#)
    - Nashville number (1, 4, 5, 6m ...) for the band

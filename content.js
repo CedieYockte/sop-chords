@@ -89,6 +89,7 @@
   const LAG = 0.5;        // detection latency compensation (s)
   const FRAME_MS = 100;   // chord frames
   const FLUX_MS = 20;     // onset frames for tempo (50 Hz)
+  const SCAN_RATE = 4;    // scan the whole song silently at 4x speed
   const ROOT_HUES = [0, 25, 48, 75, 110, 150, 175, 195, 220, 255, 285, 320];
 
   // ---------------- state ----------------
@@ -98,6 +99,7 @@
     transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0,
     started: false, openSeg: null, segFloor: 0, lastT: 0, frames: 0, silent: 0,
     loop: { a: null, b: null, on: false },
+    scan: null, complete: false,
   };
   const tracker = new C.ChordTracker({ hold: 4 });
   let segVer = 0;
@@ -181,6 +183,10 @@
     .shape { flex: 0 0 auto; width: 118px; display: flex; flex-direction: column; align-items: center; justify-content: center;
       background: rgba(255,255,255,.05); border-radius: 12px; border: 1px solid rgba(255,255,255,.08); }
     .shape .cap { font-size: 10.5px; color: #b9bcc6; margin-top: 2px; }
+    .prog { height: 3px; } .prog i { display: block; height: 100%; width: 0; background: #f2c14e; transition: width .3s; }
+    .btn.scan { background: rgba(242,193,78,.14); border-color: rgba(242,193,78,.45); color: #ffd97a; }
+    .btn.scan.run { background: #f2c14e; color: #17140a; }
+    .btn.scan.done { background: rgba(80,200,140,.14); border-color: rgba(80,200,140,.45); color: #9be8c0; }
     .msg { padding: 0 12px 9px; font-size: 12px; color: #ffb4b4; display: none; }
     .bar.min .row, .bar.min .msg { display: none; }
     .bar.min .tb { border-bottom: none; }
@@ -196,7 +202,8 @@
       <div class="grp"><span class="l">Key:</span><div class="step"><button data-a="k-">−</button><b class="key">—</b><button data-a="k+">+</button></div></div>
       <div class="grp"><span class="l">BPM:</span><div class="step"><button data-a="b-">−</button><b class="bpm" title="Double-click to reset to detected tempo">—</b><button data-a="b+">+</button></div></div>
       <span class="sp"></span>
-      <button class="btn listen" data-a="listen">▶ Listen</button>
+      <button class="btn scan" data-a="scan" title="Get every chord now: plays the song silently at 4× speed">⚡ Scan song</button>
+      <button class="btn listen" data-a="listen" title="Detect chords live while you watch">▶ Listen</button>
       <select class="inst hide-s" title="Instrument"><option value="guitar">Guitar</option><option value="piano">Piano</option><option value="bass">Bass</option></select>
       <select class="capo" title="Capo"></select>
       <button class="btn simp hide-s" data-a="simp">≡ Simplify</button>
@@ -205,12 +212,13 @@
       <button class="btn ico" data-a="min" title="Collapse">▴</button>
       <button class="btn ico" data-a="close" title="Turn off SOP">✕</button>
     </div>
+    <div class="prog"><i></i></div>
     <div class="row"><div class="cards"></div><div class="shape"></div></div>
     <div class="msg"></div>
   </div>`;
   const T = (s) => ts.querySelector(s);
   const tEl = { bar: T('.bar'), now: T('.now'), key: T('.key'), bpm: T('.bpm'), listen: T('.listen'), inst: T('.inst'), capo: T('.capo'),
-    simp: T('.simp'), cards: T('.cards'), shape: T('.shape'), msg: T('.msg'), min: T('[data-a="min"]'), mixer: T('[data-a="mixer"]') };
+    simp: T('.simp'), cards: T('.cards'), scan: T('.scan'), prog: T('.prog i'), shape: T('.shape'), msg: T('.msg'), min: T('[data-a="min"]'), mixer: T('[data-a="mixer"]') };
 
   function topMsg(text) { tEl.msg.textContent = text || ''; tEl.msg.style.display = text ? 'block' : 'none'; }
 
@@ -315,7 +323,7 @@
     cardSig = sig;
     if (!cardData.length) {
       tEl.cards.innerHTML = `<div class="empty">${st.started ? 'Listening… play the song and the chords will appear here.' :
-        'Press <b>▶ Listen</b> and play the song. Chords appear as it plays, and the whole song is saved after one play-through.'}</div>`;
+        'Press <b>⚡ Scan song</b> to get every chord now (it plays silently at 4× speed), or <b>▶ Listen</b> to follow along live.'}</div>`;
       curCard = -1; return;
     }
     tEl.cards.innerHTML = cardData.map((d, i) => {
@@ -359,8 +367,12 @@
     tEl.inst.value = prefs.instrument;
     tEl.simp.classList.toggle('on', prefs.simplify);
     tEl.mixer.classList.toggle('on', prefs.mixer);
-    tEl.listen.textContent = st.started ? 'Listening' : '▶ Listen';
-    tEl.listen.classList.toggle('live', st.started);
+    tEl.listen.textContent = st.started && !st.scan ? 'Listening' : '▶ Listen';
+    tEl.listen.classList.toggle('live', st.started && !st.scan);
+    tEl.listen.style.display = st.scan ? 'none' : '';
+    tEl.scan.classList.toggle('run', !!st.scan);
+    tEl.scan.classList.toggle('done', !st.scan && st.complete);
+    if (!st.scan) { tEl.scan.textContent = st.complete ? '✓ Chords ready · rescan' : '⚡ Scan song'; tEl.prog.style.width = '0'; }
     tEl.bar.classList.toggle('min', prefs.collapsed);
     tEl.min.textContent = prefs.collapsed ? '▾' : '▴';
   }
@@ -375,6 +387,7 @@
     const a = b.dataset.a;
     if (a === 'k+' || a === 'k-') { st.transpose = Math.max(-11, Math.min(11, st.transpose + (a === 'k+' ? 1 : -1))); changed(); }
     else if (a === 'b+' || a === 'b-') { const cur = Math.round(bpm() || 100); st.bpmManual = Math.max(30, Math.min(260, cur + (a === 'b+' ? 1 : -1))); changed(); }
+    else if (a === 'scan') { if (st.scan) finishScan(false); else startScan(); }
     else if (a === 'listen') { if (st.started) { prefs.listen = false; savePrefs(); stop(); } else { prefs.listen = true; savePrefs(); start(); } }
     else if (a === 'simp') { prefs.simplify = !prefs.simplify; savePrefs(); changed(); }
     else if (a === 'sheet') openSheet();
@@ -655,17 +668,17 @@
       s: st.segs.map((x) => [r2(x.s), r2(x.e), x.c.r, x.c.q, x.c.b]),
       k: Array.from(st.keyAcc, (v) => Math.round(v * 100) / 100),
       x: st.transpose, cp: st.capo, bm: st.bpmManual, ba: Math.round(st.bpmAuto * 10) / 10, an: r2(st.anchor),
-      t: st.title, u: Date.now(),
+      t: st.title, u: Date.now(), cm: st.complete ? 1 : 0,
     } });
   }
   async function loadChart(vid) {
-    Object.assign(st, { segs: [], keyAcc: new Float32Array(12), key: null, transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0, loop: { a: null, b: null, on: false } });
+    Object.assign(st, { segs: [], keyAcc: new Float32Array(12), key: null, transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0, complete: false, loop: { a: null, b: null, on: false } });
     const rec = (await getLocal('chart:' + vid))['chart:' + vid];
     if (rec && vid === st.vid) {
       st.segs = (rec.s || []).map(([s, e, r, q, b]) => ({ s, e, c: { r, q, b, s: 1 } }));
       st.keyAcc = Float32Array.from(rec.k || new Array(12).fill(0));
       st.key = C.detectKey(st.keyAcc);
-      Object.assign(st, { transpose: rec.x || 0, capo: rec.cp || 0, bpmManual: rec.bm || 0, bpmAuto: rec.ba || 0, anchor: rec.an || 0 });
+      Object.assign(st, { transpose: rec.x || 0, capo: rec.cp || 0, bpmManual: rec.bm || 0, bpmAuto: rec.ba || 0, anchor: rec.an || 0, complete: !!rec.cm });
     }
     segVer++;
     changed();
@@ -680,6 +693,12 @@
     const v = getVideo(); if (!v || !st.vid || !A) return;
     if (v !== hookedVideo) { try { hook(v); } catch { stop(); topMsg(BLOCKED); return; } }
     if (ctx.state === 'suspended') ctx.resume();
+    if (st.scan) {
+      const dur = v.duration || 0;
+      if (dur && (v.ended || v.currentTime >= dur - 0.4)) { finishScan(true); return; }
+      if (!isAd() && v.playbackRate !== SCAN_RATE) v.playbackRate = SCAN_RATE;
+      if (dur) { const pct = Math.min(100, v.currentTime / dur * 100); tEl.prog.style.width = pct + '%'; tEl.scan.textContent = `Scanning ${Math.floor(pct)}% · Cancel`; }
+    }
     const playing = !v.paused && !v.ended && v.readyState > 2;
     if (!playing || isAd()) { if (st.openSeg) closeSeg(Math.max(st.segFloor, v.currentTime - LAG)); return; }
     A.main.getFloatFrequencyData(A.mainBuf);
@@ -689,7 +708,8 @@
     if (main.energy === 0) { if (++st.silent === 40 && !v.muted && v.volume > 0) topMsg(BLOCKED); }
     else if (st.silent) { st.silent = 0; topMsg(''); }
     const res = tracker.push(main.chroma, bass, main.energy);
-    const t = v.currentTime, tc = Math.max(st.segFloor, t - LAG);
+    const lag = st.scan ? 0.3 * (v.playbackRate || 1) : LAG;
+    const t = v.currentTime, tc = Math.max(st.segFloor, t - lag);
     if (res.voiced && res.smooth) {
       for (let i = 0; i < 12; i++) st.keyAcc[i] += res.smooth[i];
       if (++st.frames % 20 === 0) {
@@ -711,26 +731,26 @@
     if (prevSpec) for (let k = 2; k < k1; k++) { const d = A.fluxBuf[k] - prevSpec[k]; if (d > 0 && A.fluxBuf[k] > -90 && Number.isFinite(d)) s += d; }
     const tmp = prevSpec || new Float32Array(A.fluxBuf.length); prevSpec = A.fluxBuf; A.fluxBuf = tmp;   // swap, no allocation
     flux.push({ v: s, p: ctx.currentTime * 1000 });   // audio clock = when the analysed samples were rendered
-    if (flux.length > 1000) flux.splice(0, flux.length - 1000);
+    if (flux.length > 1500) flux.splice(0, flux.length - 1500);
   }
   function tempoTick() {
     const v = getVideo();
     if (flux.length < 350 || !v || v.paused) return;
+    const rate = v.playbackRate || 1, step = 20 / rate;   // one grid sample = 20 ms of SONG time
     // resample the onset envelope onto an exact 100 Hz grid using the real clock (timers jitter)
     const p0 = flux[0].p, p1 = flux[flux.length - 1].p, grid = [];
-    for (let p = p0, j = 0; p <= p1; p += 20) {
+    for (let p = p0, j = 0; p <= p1; p += step) {
       while (j < flux.length - 2 && flux[j + 1].p <= p) j++;
       const a = flux[j], b = flux[j + 1], f = b.p > a.p ? (p - a.p) / (b.p - a.p) : 0;
       grid.push(a.v + (b.v - a.v) * Math.max(0, Math.min(1, f)));
     }
     const r = C.estimateTempo(grid, 50);
     if (!r) return;
-    const rate = v.playbackRate || 1;
-    const songBpm = r.bpm / rate;   // tempo of the recording, independent of playback speed
+    const songBpm = r.bpm;   // grid is in song time, so this is the recording's tempo at any playback speed
     if (!st.bpmAuto || Math.abs(st.bpmAuto - songBpm) > 6) st.bpmAuto = songBpm;
     else st.bpmAuto = st.bpmAuto * 0.7 + songBpm * 0.3;
     // beat anchor in video time: the phase frame happened (now - its time) ago
-    const phaseP = p0 + r.phase * 20;
+    const phaseP = p0 + r.phase * step;
     st.anchor = v.currentTime - ((ctx.currentTime * 1000 - phaseP) / 1000) * rate;
     renderToolbar(); renderCards();
   }
@@ -823,16 +843,81 @@
     try { hook(v); } catch { topMsg(BLOCKED); prefs.listen = false; renderToolbar(); return; }
     st.started = true; st.segFloor = v.currentTime; tracker.reset(); prevSpec = null; flux.length = 0;
     clearInterval(tickTimer); clearInterval(fluxTimer); clearInterval(tempoTimer);
-    tickTimer = setInterval(tick, FRAME_MS);
-    fluxTimer = setInterval(() => { fluxTick(); metroTick(); }, FLUX_MS);
-    tempoTimer = setInterval(tempoTick, 4000);
+    tickTimer = setInterval(tick, st.scan ? Math.round(FRAME_MS / SCAN_RATE) : FRAME_MS);
+    fluxTimer = setInterval(() => { fluxTick(); if (!st.scan) metroTick(); }, st.scan ? Math.max(4, Math.round(FLUX_MS / SCAN_RATE)) : FLUX_MS);
+    tempoTimer = setInterval(tempoTick, st.scan ? 1000 : 4000);
     topMsg('');
     applyMix();
     if (v.paused && !auto) v.play().catch(() => {});
     renderToolbar(); renderCards(true);
   }
+  // ---------- scan: get every chord up front ----------
+  function startScan() {
+    const v = getVideo(); if (!v) return;
+    if (st.started) stop();
+    try { hook(v); } catch { topMsg(BLOCKED); return; }
+    st.scan = { rate: v.playbackRate || 1, time: v.currentTime, muted: v.muted, paused: v.paused };
+    // fresh chart for a clean result
+    st.segs = []; st.keyAcc = new Float32Array(12); st.key = null; st.complete = false; st.openSeg = null; st.bpmAuto = 0; segVer++;
+    A.master.gain.setTargetAtTime(0, ctx.currentTime, 0.02);   // silent: the user doesn't hear the fast playback
+    v.muted = false;                                            // the element must output sound for analysis
+    st.segFloor = 0;
+    v.currentTime = 0;
+    v.playbackRate = SCAN_RATE;
+    start(true);
+    v.play().catch(() => {});
+    topMsg('');
+    renderToolbar(); renderCards(true);
+  }
+  function finishScan(done) {
+    const v = getVideo(), sc = st.scan; if (!sc) return;
+    if (v && done) closeSeg(v.duration || v.currentTime);
+    st.scan = null;
+    stop();
+    if (v) {
+      v.playbackRate = sc.rate === SCAN_RATE ? 1 : sc.rate;
+      v.muted = sc.muted;
+      if (done) { v.pause(); v.currentTime = 0; } else { v.currentTime = sc.time; if (sc.paused) v.pause(); }
+    }
+    if (A) A.master.gain.setTargetAtTime(1, ctx.currentTime, 0.05);
+    if (done) {
+      st.complete = true;
+      let tot = 0; for (let i = 0; i < 12; i++) tot += st.keyAcc[i];
+      if (tot > 0) st.key = C.detectKey(st.keyAcc);
+      if (!st.bpmManual) st.bpmAuto = st.bpmAuto ? refineTempo(st.bpmAuto) : tempoFromChart();
+      topMsg('');
+    }
+    saveChart(); changed();
+  }
+  // rough tempo from chord-change spacing (changes land on beats); refined later while playing live
+  function tempoFromChart() {
+    const d = st.segs.map((x) => x.e - x.s).filter((x) => x >= 1 && x <= 16);
+    if (d.length < 4) return 0;
+    let best = 0, bestS = -1e9;
+    for (let b = 60; b <= 180; b += 0.5) {
+      let sc = 0;
+      for (const x of d) sc += Math.min(x, 8) * Math.cos(2 * Math.PI * x * b / 60);
+      sc *= Math.exp(-0.5 * Math.pow(Math.log2(b / 100) / 0.6, 2));
+      if (sc > bestS) { bestS = sc; best = b; }
+    }
+    return best;
+  }
+  // Chords nearly always change on bar lines (or half bars). Near the measured tempo, pick the one
+  // that makes the chord lengths land on whole half-bars (2 beats).
+  function refineTempo(est) {
+    const d = st.segs.map((x) => x.e - x.s).filter((x) => x >= 1.2 && x <= 20);
+    if (d.length < 4) return est;
+    let best = est, bestS = -1e9;
+    for (let b = est * 0.88; b <= est * 1.12; b += 0.25) {
+      let sc = 0;
+      for (const x of d) sc += Math.min(x, 8) * Math.cos(2 * Math.PI * x * b / 120);
+      sc -= Math.abs(b - est) * 0.02 * d.length;          // stay close to what was measured
+      if (sc > bestS) { bestS = sc; best = b; }
+    }
+    return Math.round(best * 2) / 2;
+  }
   function autoResume() {
-    if (!prefs.listen || !prefs.enabled || !st.vid || st.started) return;
+    if (!prefs.listen || !prefs.enabled || !st.vid || st.started || st.complete) return;
     const go = () => { if (prefs.listen && prefs.enabled && st.vid && !st.started) start(true); };
     if (navigator.userActivation && navigator.userActivation.hasBeenActive) go();
     else {
@@ -920,6 +1005,7 @@
   async function onNav() {
     const vid = getVid();
     if (vid === st.vid) { placeHosts(); return; }
+    if (st.scan) finishScan(false);
     if (st.vid) { closeSeg(st.lastT); saveChart(); }
     st.vid = vid; st.title = songTitle(); st.openSeg = null; st.frames = 0; st.lastT = 0; st.segFloor = 0;
     tracker.reset(); flux.length = 0; prevSpec = null; Object.keys(waves).forEach((k) => (waves[k] = []));
