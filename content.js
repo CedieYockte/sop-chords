@@ -94,13 +94,13 @@
   const ROOT_HUES = [0, 25, 48, 75, 110, 150, 175, 195, 220, 255, 285, 320];
 
   // ---------------- state ----------------
-  const prefs = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false, listen: false };
+  const prefs = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false, listen: false, shiftAudio: false };
   const st = {
     vid: null, title: '', segs: [], keyAcc: new Float32Array(12), key: null,
     transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0,
     started: false, openSeg: null, segFloor: 0, lastT: 0, frames: 0, silent: 0,
     loop: { a: null, b: null, on: false },
-    scan: null, complete: false,
+    scan: null, complete: false, tuning: null,   // tuning: the recording's offset from A440, in cents
     rec: [], onsets: [], tc: 0, ts: 0,   // scan recording: frames, onsets, tuning stats
   };
   const tracker = new C.ChordTracker({ hold: 4 });
@@ -148,7 +148,7 @@
     * { box-sizing: border-box; font-family: "Segoe UI", Roboto, system-ui, sans-serif; }
     .bar { background: rgba(24,25,30,.93); contain: layout paint;
       border: 1px solid rgba(255,255,255,.09); border-radius: 14px; color: #f1f2f5; box-shadow: 0 10px 30px rgba(0,0,0,.35); overflow: hidden; }
-    .tb { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,.07); }
+    .tb { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 8px; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,.07); }
     .logo { font-weight: 800; letter-spacing: 1.5px; color: #f2c14e; font-size: 13px; margin-right: 2px; }
     .grp { display: flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
     .grp > span.l { color: #c9ccd4; }
@@ -157,6 +157,8 @@
     .step button:hover { background: rgba(255,255,255,.1); }
     .step b { min-width: 36px; text-align: center; font-size: 13.5px; }
     .step b i { font-style: normal; color: #f2c14e; font-size: 10px; margin-left: 2px; }
+    .btn.aud { padding: 0 9px; }
+    .btn.aud.on { background: rgba(242,193,78,.18); border-color: rgba(242,193,78,.55); color: #ffd97a; }
     .sp { flex: 1; }
     .btn, select { height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.08); color: #fff;
       font: 600 12.5px "Segoe UI", Roboto, system-ui, sans-serif; padding: 0 10px; cursor: pointer; white-space: nowrap; }
@@ -201,7 +203,8 @@
     <div class="tb">
       <span class="logo">SOP</span>
       <span class="now"></span>
-      <div class="grp"><span class="l">Key:</span><div class="step"><button data-a="k-">−</button><b class="key">—</b><button data-a="k+">+</button></div></div>
+      <div class="grp"><span class="l">Key:</span><div class="step"><button data-a="k-">−</button><b class="key">—</b><button data-a="k+">+</button></div>
+        <button class="btn aud" data-a="aud" title="Also move the song's audio (voice and instruments) to the new key, tuned to A440">🔈 Audio</button></div>
       <div class="grp"><span class="l">BPM:</span><div class="step"><button data-a="b-">−</button><b class="bpm" title="Double-click to reset to detected tempo">—</b><button data-a="b+">+</button></div></div>
       <span class="sp"></span>
       <button class="btn scan" data-a="scan" title="Get every chord now: plays the song silently at 4× speed">⚡ Scan song</button>
@@ -220,7 +223,7 @@
   </div>`;
   const T = (s) => ts.querySelector(s);
   const tEl = { bar: T('.bar'), now: T('.now'), key: T('.key'), bpm: T('.bpm'), listen: T('.listen'), inst: T('.inst'), capo: T('.capo'),
-    simp: T('.simp'), cards: T('.cards'), scan: T('.scan'), prog: T('.prog i'), shape: T('.shape'), msg: T('.msg'), min: T('[data-a="min"]'), mixer: T('[data-a="mixer"]') };
+    aud: T('.aud'), simp: T('.simp'), cards: T('.cards'), scan: T('.scan'), prog: T('.prog i'), shape: T('.shape'), msg: T('.msg'), min: T('[data-a="min"]'), mixer: T('[data-a="mixer"]') };
 
   function topMsg(text) { tEl.msg.textContent = text || ''; tEl.msg.style.display = text ? 'block' : 'none'; }
 
@@ -368,13 +371,18 @@
       `<option value="${i}"${i === st.capo ? ' selected' : ''}>Capo ${i}${sug && sug.fret === i && i > 0 ? ' ★' : ''}</option>`).join('');
     tEl.inst.value = prefs.instrument;
     tEl.simp.classList.toggle('on', prefs.simplify);
+    tEl.aud.classList.toggle('on', prefs.shiftAudio);
+    tEl.aud.textContent = prefs.shiftAudio ? '🔊 Audio' : '🔈 Audio';
+    tEl.aud.title = prefs.shiftAudio
+      ? `Audio follows the key${pitchInfo()} — click to play the original audio`
+      : "Also move the song's audio (voice and instruments) to the new key, tuned to A440";
     tEl.mixer.classList.toggle('on', prefs.mixer);
     tEl.listen.textContent = st.started && !st.scan ? 'Listening' : '▶ Listen';
     tEl.listen.classList.toggle('live', st.started && !st.scan);
     tEl.listen.style.display = st.scan ? 'none' : '';
     tEl.scan.classList.toggle('run', !!st.scan);
     tEl.scan.classList.toggle('done', !st.scan && st.complete);
-    if (!st.scan) { tEl.scan.textContent = st.complete ? '✓ Chords ready · rescan' : '⚡ Scan song'; tEl.prog.style.width = '0'; }
+    if (!st.scan) { tEl.scan.textContent = st.complete ? '✓ Ready' : '⚡ Scan song'; tEl.scan.title = st.complete ? 'All chords are ready — click to scan the song again' : 'Get every chord now: plays the song silently at 4× speed'; tEl.prog.style.width = '0'; }
     tEl.bar.classList.toggle('min', prefs.collapsed);
     tEl.min.textContent = prefs.collapsed ? '▾' : '▴';
   }
@@ -387,7 +395,8 @@
       return;
     }
     const a = b.dataset.a;
-    if (a === 'k+' || a === 'k-') { st.transpose = Math.max(-11, Math.min(11, st.transpose + (a === 'k+' ? 1 : -1))); changed(); }
+    if (a === 'aud') { prefs.shiftAudio = !prefs.shiftAudio; savePrefs(); renderToolbar(); applyPitch(); }
+    else if (a === 'k+' || a === 'k-') { st.transpose = Math.max(-11, Math.min(11, st.transpose + (a === 'k+' ? 1 : -1))); changed(); }
     else if (a === 'b+' || a === 'b-') { const cur = Math.round(bpm() || 100); st.bpmManual = Math.max(30, Math.min(260, cur + (a === 'b+' ? 1 : -1))); changed(); }
     else if (a === 'scan') { if (st.scan) finishScan(false); else startScan(); }
     else if (a === 'listen') { if (st.started) { prefs.listen = false; savePrefs(); stop(); } else { prefs.listen = true; savePrefs(); start(); } }
@@ -576,7 +585,9 @@
     A.fluxBuf = new Float32Array(A.fluxAn.frequencyBinCount);
     A.input.connect(A.main); A.input.connect(A.fluxAn);
     A.input.connect(A.dry); A.dry.connect(A.master);
-    A.wet.connect(A.master); A.master.connect(ctx.destination);
+    A.wet.connect(A.master);
+    A.dryOut = g(1); A.master.connect(A.dryOut); A.dryOut.connect(ctx.destination);   // original audio
+    A.pitchOut = g(0); A.pitchOut.connect(ctx.destination);                          // key-shifted audio
     // mid / side split
     const split = ctx.createChannelSplitter(2), mid = g(), side = g();
     A.split = split;
@@ -670,23 +681,116 @@
       s: st.segs.map((x) => [r2(x.s), r2(x.e), x.c.r, x.c.q, x.c.b]),
       k: Array.from(st.keyAcc, (v) => Math.round(v * 100) / 100),
       x: st.transpose, cp: st.capo, bm: st.bpmManual, ba: Math.round(st.bpmAuto * 10) / 10, an: r2(st.anchor),
-      t: st.title, u: Date.now(), cm: st.complete ? 1 : 0,
+      t: st.title, u: Date.now(), cm: st.complete ? 1 : 0, tu: st.tuning,
     } });
   }
   async function loadChart(vid) {
-    Object.assign(st, { segs: [], keyAcc: new Float32Array(12), key: null, transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0, complete: false, loop: { a: null, b: null, on: false } });
+    Object.assign(st, { segs: [], keyAcc: new Float32Array(12), key: null, transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0, complete: false, tuning: null, loop: { a: null, b: null, on: false } });
     const rec = (await getLocal('chart:' + vid))['chart:' + vid];
     if (rec && vid === st.vid) {
       st.segs = (rec.s || []).map(([s, e, r, q, b]) => ({ s, e, c: { r, q, b, s: 1 } }));
       st.keyAcc = Float32Array.from(rec.k || new Array(12).fill(0));
       st.key = C.detectKey(st.keyAcc);
-      Object.assign(st, { transpose: rec.x || 0, capo: rec.cp || 0, bpmManual: rec.bm || 0, bpmAuto: rec.ba || 0, anchor: rec.an || 0, complete: !!rec.cm });
+      Object.assign(st, { transpose: rec.x || 0, capo: rec.cp || 0, bpmManual: rec.bm || 0, bpmAuto: rec.ba || 0, anchor: rec.an || 0, complete: !!rec.cm, tuning: typeof rec.tu === 'number' ? rec.tu : null });
     }
     segVer++;
     changed();
     renderLoop();
   }
-  function changed() { shapeId = ''; renderToolbar(); renderCards(true); scheduleSave(); uiTick(); }
+  function changed() { shapeId = ''; renderToolbar(); renderCards(true); scheduleSave(); uiTick(); applyPitch(); }
+
+  // ======================= KEY CHANGE FOR THE AUDIO =======================
+  // Phase-vocoder pitch shift with formant preservation (pitch-dsp.js), run in an AudioWorklet when the
+  // page allows it, otherwise on a ScriptProcessor. Also corrects the recording's tuning to A440.
+  const P = { node: null, kind: '', ready: null, active: false, semis: 0, delay: 0, state: { active: false }, seq: 0 };
+  function audioSemitones() {
+    if (!prefs.shiftAudio) return 0;
+    // the shortest move to the same key: +7 sounds the same as -5 but far more natural
+    const n = (((st.transpose % 12) + 18) % 12) - 6;
+    const tune = st.tuning != null && Math.abs(st.tuning) >= 4 ? -st.tuning / 100 : 0;   // pull the recording to A440
+    return n + tune;
+  }
+  function pitchInfo() {
+    const n = (((st.transpose % 12) + 18) % 12) - 6;
+    const parts = [];
+    if (n) parts.push(`${n > 0 ? '+' : ''}${n} semitone${Math.abs(n) === 1 ? '' : 's'}`);
+    if (st.tuning != null && Math.abs(st.tuning) >= 4) parts.push(`retuned ${st.tuning > 0 ? '−' : '+'}${Math.abs(Math.round(st.tuning))} cents to A440`);
+    return parts.length ? ` (${parts.join(', ')})` : '';
+  }
+  async function ensurePitch() {
+    if (P.ready) return P.ready;
+    P.ready = (async () => {
+      try {
+        await ctx.audioWorklet.addModule(chrome.runtime.getURL('pitch-dsp.js'));
+        await ctx.audioWorklet.addModule(chrome.runtime.getURL('pitch-worklet.js'));
+        const node = new AudioWorkletNode(ctx, 'sop-pitch', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+        node.port.onmessage = (e) => { if (e.data && e.data.delay) P.delay = e.data.delay / ctx.sampleRate; };
+        P.node = node; P.kind = 'worklet';
+      } catch (err) {
+        // page rules can block worklets: run the same engine on a script processor instead
+        const node = ctx.createScriptProcessor(2048, 2, 2);
+        const sh = [new window.SOPPitchShifter(ctx.sampleRate, { phase: 0 }), new window.SOPPitchShifter(ctx.sampleRate, { phase: 0.5 })];
+        node.onaudioprocess = (ev) => {
+          const ib = ev.inputBuffer, ob = ev.outputBuffer;
+          for (let c = 0; c < 2; c++) {
+            const out = ob.getChannelData(c);
+            if (!P.state.active) { out.fill(0); continue; }
+            sh[c].process(ib.getChannelData(Math.min(c, ib.numberOfChannels - 1)), out);
+          }
+        };
+        P.state.apply = (d) => {
+          if (typeof d.semis === 'number') sh.forEach((x) => x.setSemitones(d.semis));
+          if (typeof d.active === 'boolean') { if (d.active && !P.state.active) sh.forEach((x) => x.reset()); P.state.active = d.active; }
+        };
+        P.delay = (sh[0].delay + 2048) / ctx.sampleRate;
+        P.node = node; P.kind = 'script';
+      }
+      P.node.channelCountMode = 'explicit'; P.node.channelCount = 2;
+      A.master.connect(P.node); P.node.connect(A.pitchOut);
+      console.log('[SOP] key-change engine ready:', P.kind);
+    })();
+    return P.ready;
+  }
+  const pitchSend = (d) => { if (P.kind === 'worklet') P.node.port.postMessage(d); else if (P.state.apply) P.state.apply(d); };
+  async function applyPitch() {
+    const n = audioSemitones();
+    if (Math.abs(n - P.semis) < 0.001 && (n !== 0) === P.active) return;
+    const my = ++P.seq;
+    if (n !== 0 && !A) {
+      // browsers keep audio paused until the first click/key; taking over the sound before that would mute the video
+      if (navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+        if (!P.waiting) {
+          P.waiting = true;
+          const once = () => { document.removeEventListener('pointerdown', once, true); document.removeEventListener('keydown', once, true); P.waiting = false; applyPitch(); };
+          document.addEventListener('pointerdown', once, true); document.addEventListener('keydown', once, true);
+        }
+        return;
+      }
+      const v = getVideo(); if (!v) return;
+      try { hook(v); } catch { topMsg(BLOCKED); return; }
+    }
+    if (!A || (n === 0 && !P.node)) { P.semis = n; return; }
+    await ensurePitch();
+    if (my !== P.seq) return;
+    P.semis = n;
+    pitchSend({ semis: n });
+    const now = ctx.currentTime;
+    if (n !== 0 && !P.active) {
+      P.active = true;
+      pitchSend({ active: true });
+      // wait for the engine to fill its buffer, then crossfade from the original audio
+      setTimeout(() => {
+        if (my !== P.seq || !P.active) return;
+        const t = ctx.currentTime;
+        A.pitchOut.gain.setTargetAtTime(1, t, 0.03); A.dryOut.gain.setTargetAtTime(0, t, 0.03);
+      }, Math.round(P.delay * 1000) + 60);
+    } else if (n === 0 && P.active) {
+      P.active = false;
+      A.pitchOut.gain.setTargetAtTime(0, now, 0.03); A.dryOut.gain.setTargetAtTime(1, now, 0.03);
+      setTimeout(() => { if (!P.active) pitchSend({ active: false }); }, 250);
+    }
+    renderToolbar();
+  }
 
   // ---------- song clock ----------
   const clk = { ct: -1, at: 0 };
@@ -708,7 +812,7 @@
       const dur = v.duration || 0;
       if (dur && (v.ended || v.currentTime >= dur - 0.4)) { finishScan(true); return; }
       if (!isAd() && v.playbackRate !== SCAN_RATE) v.playbackRate = SCAN_RATE;
-      if (dur) { const pct = Math.min(100, v.currentTime / dur * 100); tEl.prog.style.width = pct + '%'; tEl.scan.textContent = `Scanning ${Math.floor(pct)}% · Cancel`; }
+      if (dur) { const pct = Math.min(100, v.currentTime / dur * 100); tEl.prog.style.width = pct + '%'; tEl.scan.textContent = `Scanning ${Math.floor(pct)}% · ✕`; }
     }
     const playing = !v.paused && !v.ended && v.readyState > 2;
     if (!playing || isAd()) { if (st.openSeg) closeSeg(Math.max(st.segFloor, v.currentTime - LAG)); return; }
@@ -731,6 +835,7 @@
       for (let i = 0; i < 12; i++) st.keyAcc[i] += res.smooth[i];
       if (++st.frames % 20 === 0) {
         let tot = 0; for (let i = 0; i < 12; i++) tot += st.keyAcc[i];
+        if (tot > 400 && !st.complete && !st.scan) st.tuning = centsNow();
         if (tot > 400) { const k = C.detectKey(st.keyAcc); const was = st.key && `${st.key.root}${st.key.minor}`; st.key = k; if (was !== `${k.root}${k.minor}`) renderToolbar(); }
         scheduleSave();
       }
@@ -838,7 +943,7 @@
     const t = v.currentTime;
     if (st.loop.on && st.loop.a != null && st.loop.b != null && t >= st.loop.b) v.currentTime = st.loop.a;
     renderCards();
-    updateCards(t + (v.paused ? 0 : LEAD * (v.playbackRate || 1)));
+    updateCards(t + (v.paused ? 0 : (LEAD - (P.active ? P.delay : 0)) * (v.playbackRate || 1)));
     const live = st.started && !v.paused && st.openSeg ? st.openSeg.c : null;
     const at = live || (cardData.find((d) => t >= d.s && t < d.e) || {}).raw || null;
     renderShape(at);
@@ -908,6 +1013,7 @@
       const lastSeg = st.segs[st.segs.length - 1], dur = v && v.duration;
       if (lastSeg && dur && dur - lastSeg.e < 2) lastSeg.e = dur;   // the scan stops just before the end
       st.keyAcc = res.keyAcc; segVer++;
+      st.tuning = res.cents;
       console.log('[SOP] scan decoded:', segs.length, 'chords, tuning', Math.round(res.cents), 'cents');
     }
     st.rec = []; st.onsets = [];
@@ -1086,6 +1192,7 @@
     io.observe(mix);
     const iv3 = setInterval(() => { if (!dead && prefs.enabled && mixOnScreen && !document.hidden) drawMixer(getVideo()); }, 66);
     window.__sopMixVisible = () => mixOnScreen;
+    window.__sopAudioDebug = () => ({ ctx, A, P, tuning: st.tuning, semis: audioSemitones() });   // for testing
     window.__sopDebugSegs = () => displaySegs().map((d) => ({ s: d.s, e: d.e, c: C.label(d.raw, 0, false) }));   // for testing
     window.__sopKill = () => {
       dead = true;

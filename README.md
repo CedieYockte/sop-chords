@@ -27,6 +27,11 @@ USE
 
 ON TOP OF THE VIDEO
 - Key − / +   transpose the whole song
+- 🔊 Audio    also move the song's AUDIO to the new key (voice + instruments), and
+              retune the recording to standard A440 so your instrument matches it.
+              Notes land within a few cents; "natural voice" keeps singers sounding
+              like themselves. SOP takes the shortest move (+7 plays as −5).
+              1–3 steps sound best; adds ~0.09 s of audio delay (chords stay in sync).
 - BPM − / +   nudge the detected tempo (double-click the number to reset)
 - Instrument  guitar, piano or bass shape for the current chord
 - Capo        chords switch to the shapes you play with that capo (★ = suggested)

@@ -86,7 +86,7 @@ function loadContext() {
       if (chrome.runtime.lastError || !st) {
         if (retry) {
           // Tab was open before SOP was installed/updated: load SOP into it now.
-          chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['sop-core.js', 'content.js'] }, () => {
+          chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['sop-core.js', 'pitch-dsp.js', 'content.js'] }, () => {
             if (chrome.runtime.lastError) return showReload(chrome.runtime.lastError.message);
             setTimeout(() => ask(false), 400);
           });
