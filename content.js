@@ -94,7 +94,7 @@
   const ROOT_HUES = [0, 25, 48, 75, 110, 150, 175, 195, 220, 255, 285, 320];
 
   // ---------------- state ----------------
-  const prefs = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false, listen: false, shiftAudio: false };
+  const prefs = { enabled: false, accidentals: 'auto', instrument: 'guitar', simplify: false, mixer: true, collapsed: false, listen: false, audioFollowsKey: true };
   const st = {
     vid: null, title: '', segs: [], keyAcc: new Float32Array(12), key: null,
     transpose: 0, capo: 0, bpmManual: 0, bpmAuto: 0, anchor: 0,
@@ -204,7 +204,7 @@
       <span class="logo">SOP</span>
       <span class="now"></span>
       <div class="grp"><span class="l">Key:</span><div class="step"><button data-a="k-">−</button><b class="key">—</b><button data-a="k+">+</button></div>
-        <button class="btn aud" data-a="aud" title="Also move the song's audio (voice and instruments) to the new key, tuned to A440">🔈 Audio</button></div>
+        <button class="btn aud on" data-a="aud" title="The song's audio follows the key">🔊 Audio: On</button></div>
       <div class="grp"><span class="l">BPM:</span><div class="step"><button data-a="b-">−</button><b class="bpm" title="Double-click to reset to detected tempo">—</b><button data-a="b+">+</button></div></div>
       <span class="sp"></span>
       <button class="btn scan" data-a="scan" title="Get every chord now: plays the song silently at 4× speed">⚡ Scan song</button>
@@ -371,11 +371,11 @@
       `<option value="${i}"${i === st.capo ? ' selected' : ''}>Capo ${i}${sug && sug.fret === i && i > 0 ? ' ★' : ''}</option>`).join('');
     tEl.inst.value = prefs.instrument;
     tEl.simp.classList.toggle('on', prefs.simplify);
-    tEl.aud.classList.toggle('on', prefs.shiftAudio);
-    tEl.aud.textContent = prefs.shiftAudio ? '🔊 Audio' : '🔈 Audio';
-    tEl.aud.title = prefs.shiftAudio
+    tEl.aud.classList.toggle('on', prefs.audioFollowsKey);
+    tEl.aud.textContent = prefs.audioFollowsKey ? '🔊 Audio: On' : '🔇 Audio: Off';
+    tEl.aud.title = prefs.audioFollowsKey
       ? `Audio follows the key${pitchInfo()} — click to play the original audio`
-      : "Also move the song's audio (voice and instruments) to the new key, tuned to A440";
+      : "Audio is the original recording — click so the voice and instruments follow the key";
     tEl.mixer.classList.toggle('on', prefs.mixer);
     tEl.listen.textContent = st.started && !st.scan ? 'Listening' : '▶ Listen';
     tEl.listen.classList.toggle('live', st.started && !st.scan);
@@ -395,7 +395,7 @@
       return;
     }
     const a = b.dataset.a;
-    if (a === 'aud') { prefs.shiftAudio = !prefs.shiftAudio; savePrefs(); renderToolbar(); applyPitch(); }
+    if (a === 'aud') { prefs.audioFollowsKey = !prefs.audioFollowsKey; savePrefs(); renderToolbar(); applyPitch(); }
     else if (a === 'k+' || a === 'k-') { st.transpose = Math.max(-11, Math.min(11, st.transpose + (a === 'k+' ? 1 : -1))); changed(); }
     else if (a === 'b+' || a === 'b-') { const cur = Math.round(bpm() || 100); st.bpmManual = Math.max(30, Math.min(260, cur + (a === 'b+' ? 1 : -1))); changed(); }
     else if (a === 'scan') { if (st.scan) finishScan(false); else startScan(); }
@@ -704,7 +704,7 @@
   // page allows it, otherwise on a ScriptProcessor. Also corrects the recording's tuning to A440.
   const P = { node: null, kind: '', ready: null, active: false, semis: 0, delay: 0, state: { active: false }, seq: 0 };
   function audioSemitones() {
-    if (!prefs.shiftAudio) return 0;
+    if (!prefs.audioFollowsKey) return 0;
     // the shortest move to the same key: +7 sounds the same as -5 but far more natural
     const n = (((st.transpose % 12) + 18) % 12) - 6;
     const tune = st.tuning != null && Math.abs(st.tuning) >= 4 ? -st.tuning / 100 : 0;   // pull the recording to A440

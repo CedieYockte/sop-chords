@@ -27,7 +27,7 @@ USE
 
 ON TOP OF THE VIDEO
 - Key − / +   transpose the whole song
-- 🔊 Audio    also move the song's AUDIO to the new key (voice + instruments), and
+- 🔊 Audio    ON by default: the song's AUDIO follows the key (voice + instruments), and
               retune the recording to standard A440 so your instrument matches it.
               Notes land within a few cents; "natural voice" keeps singers sounding
               like themselves. SOP takes the shortest move (+7 plays as −5).
